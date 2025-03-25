@@ -2,33 +2,65 @@
 <html lang="en">
 <head>
     <meta charset="UTF-8">
-    <title>Options Trading Dashboard</title>
+    <title>Deriv Options Trading Dashboard</title>
     <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/lightweight-charts/dist/lightweight-charts.css">
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
     <style>
         :root {
             --primary-color: #00b4d8;
+            --primary-dark: #0093b8;
             --secondary-color: #ff4d4d;
+            --secondary-dark: #e03c3c;
             --background: #0a192f;
+            --background-light: #172a46;
             --panel-bg: rgba(255, 255, 255, 0.05);
+            --panel-bg-light: rgba(255, 255, 255, 0.08);
+            --text-primary: #ffffff;
+            --text-secondary: rgba(255, 255, 255, 0.7);
+            --success-color: #00c853;
+            --warning-color: #ffab00;
+            --error-color: #ff3d00;
+            --border-radius: 12px;
+            --box-shadow: 0 8px 32px rgba(0, 0, 0, 0.2);
+            --transition: all 0.3s cubic-bezier(0.25, 0.8, 0.25, 1);
+        }
+
+        * {
+            box-sizing: border-box;
+            margin: 0;
+            padding: 0;
         }
 
         body {
             background: var(--background);
-            color: white;
-            font-family: 'Roboto', sans-serif;
+            color: var(--text-primary);
+            font-family: 'Inter', sans-serif;
             margin: 0;
             padding: 20px;
+            min-height: 100vh;
+            overflow-x: hidden;
         }
 
         .dashboard-header {
             display: flex;
             justify-content: space-between;
             align-items: center;
-            padding: 20px;
+            padding: 15px 25px;
             background: var(--panel-bg);
-            backdrop-filter: blur(10px);
-            border-radius: 15px;
+            backdrop-filter: blur(12px);
+            border-radius: var(--border-radius);
             margin-bottom: 20px;
+            box-shadow: var(--box-shadow);
+            border: 1px solid rgba(255, 255, 255, 0.1);
+        }
+
+        .dashboard-header h2 {
+            font-weight: 600;
+            font-size: 1.5rem;
+            background: linear-gradient(90deg, var(--primary-color), #00e676);
+            -webkit-background-clip: text;
+            background-clip: text;
+            color: transparent;
         }
 
         .instrument-selector {
@@ -38,20 +70,46 @@
             border-radius: 8px;
             color: white;
             cursor: pointer;
+            font-family: 'Inter', sans-serif;
+            font-weight: 500;
+            transition: var(--transition);
+        }
+
+        .instrument-selector:hover {
+            background: rgba(0, 180, 216, 0.2);
+        }
+
+        .instrument-selector:focus {
+            outline: none;
+            box-shadow: 0 0 0 2px rgba(0, 180, 216, 0.3);
+        }
+
+        .account-info {
+            display: flex;
+            align-items: center;
+            gap: 15px;
+        }
+
+        .account-balance {
+            font-weight: 600;
+            font-size: 1.1rem;
         }
 
         .main-grid {
             display: grid;
-            grid-template-columns: 1fr 300px;
+            grid-template-columns: 1fr 350px;
             gap: 20px;
-            height: 80vh;
+            height: calc(100vh - 120px);
         }
 
         .chart-container {
             background: var(--panel-bg);
-            border-radius: 15px;
+            border-radius: var(--border-radius);
             padding: 20px;
             position: relative;
+            box-shadow: var(--box-shadow);
+            border: 1px solid rgba(255, 255, 255, 0.1);
+            backdrop-filter: blur(12px);
         }
 
         .chart-controls {
@@ -60,99 +118,303 @@
             right: 20px;
             display: flex;
             gap: 10px;
+            z-index: 10;
         }
 
         .chart-button {
             padding: 8px 15px;
             background: rgba(0, 180, 216, 0.1);
             border: 1px solid var(--primary-color);
-            border-radius: 5px;
+            border-radius: 6px;
             color: white;
             cursor: pointer;
-            transition: all 0.3s ease;
+            transition: var(--transition);
+            font-family: 'Inter', sans-serif;
+            font-weight: 500;
+            font-size: 0.85rem;
         }
 
         .chart-button:hover {
             background: rgba(0, 180, 216, 0.2);
         }
 
+        .chart-button.active {
+            background: var(--primary-color);
+            color: white;
+        }
+
         .analysis-panel {
             background: var(--panel-bg);
-            border-radius: 15px;
+            border-radius: var(--border-radius);
             padding: 20px;
             overflow-y: auto;
             display: flex;
             flex-direction: column;
             gap: 20px;
+            box-shadow: var(--box-shadow);
+            border: 1px solid rgba(255, 255, 255, 0.1);
+            backdrop-filter: blur(12px);
+        }
+
+        .analysis-panel::-webkit-scrollbar {
+            width: 6px;
+        }
+
+        .analysis-panel::-webkit-scrollbar-track {
+            background: rgba(255, 255, 255, 0.05);
+            border-radius: 3px;
+        }
+
+        .analysis-panel::-webkit-scrollbar-thumb {
+            background: var(--primary-color);
+            border-radius: 3px;
+        }
+
+        .panel-title {
+            font-size: 1.2rem;
+            font-weight: 600;
+            margin-bottom: 10px;
+            color: var(--primary-color);
+        }
+
+        .strategy-status-container {
+            display: grid;
+            grid-template-columns: repeat(2, 1fr);
+            gap: 10px;
         }
 
         .strategy-status {
             padding: 15px;
-            background: rgba(0, 180, 216, 0.1);
+            background: var(--panel-bg-light);
             border-radius: 8px;
             border-left: 4px solid var(--primary-color);
+            transition: var(--transition);
+        }
+
+        .strategy-status:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 4px 12px rgba(0, 0, 0, 0.1);
         }
 
         .strategy-status.analyzing {
-            border-left-color: #ffd700;
+            border-left-color: var(--warning-color);
         }
 
         .strategy-status.completed {
-            border-left-color: #00ff00;
+            border-left-color: var(--success-color);
+        }
+
+        .strategy-status.error {
+            border-left-color: var(--error-color);
+        }
+
+        .strategy-name {
+            font-weight: 600;
+            margin-bottom: 5px;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+
+        .strategy-description {
+            font-size: 0.8rem;
+            color: var(--text-secondary);
+            margin-bottom: 10px;
+        }
+
+        .strategy-progress {
+            height: 4px;
+            background: rgba(255, 255, 255, 0.1);
+            border-radius: 2px;
+            margin-top: 10px;
+            overflow: hidden;
+        }
+        
+        .progress-bar {
+            width: 0%;
+            height: 100%;
+            background: var(--primary-color);
+            transition: width 0.3s ease;
+        }
+
+        .analysis-log {
+            flex-grow: 1;
+            overflow-y: auto;
+            display: flex;
+            flex-direction: column-reverse;
+            gap: 10px;
+            padding-right: 5px;
         }
 
         .log-entry {
-            padding: 10px;
-            margin: 10px 0;
-            background: rgba(0, 180, 216, 0.1);
+            padding: 12px;
+            background: var(--panel-bg-light);
             border-radius: 8px;
-            font-size: 0.9em;
+            font-size: 0.85rem;
+            line-height: 1.5;
+            transition: var(--transition);
+            border-left: 3px solid var(--panel-bg-light);
+        }
+
+        .log-entry:hover {
+            background: var(--panel-bg);
+            border-left: 3px solid var(--primary-color);
+        }
+
+        .log-time {
+            color: var(--primary-color);
+            font-size: 0.75rem;
+            margin-bottom: 3px;
+        }
+
+        .log-message {
+            word-break: break-word;
         }
 
         .performance-metrics {
             display: grid;
             grid-template-columns: repeat(2, 1fr);
             gap: 10px;
-            margin-top: 20px;
+            margin-top: 10px;
         }
 
         .metric-card {
-            background: rgba(0, 180, 216, 0.1);
+            background: var(--panel-bg-light);
             padding: 15px;
             border-radius: 8px;
             text-align: center;
+            transition: var(--transition);
+        }
+
+        .metric-card:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 4px 12px rgba(0, 0, 0, 0.1);
+        }
+
+        .metric-label {
+            font-size: 0.8rem;
+            color: var(--text-secondary);
+            margin-bottom: 5px;
         }
 
         .metric-value {
-            font-size: 1.5em;
-            font-weight: bold;
+            font-size: 1.4rem;
+            font-weight: 600;
             color: var(--primary-color);
         }
 
         .signal-panel {
-            background: rgba(0, 180, 216, 0.1);
-            padding: 15px;
+            background: var(--panel-bg-light);
+            padding: 20px;
             border-radius: 8px;
-            margin-top: 20px;
+            margin-top: 10px;
+            transition: var(--transition);
         }
 
-        .signal-panel h3 {
-            margin: 0 0 10px 0;
+        .signal-panel:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 4px 12px rgba(0, 0, 0, 0.1);
+        }
+
+        .signal-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 10px;
+        }
+
+        .signal-title {
+            font-weight: 600;
             color: var(--primary-color);
+        }
+
+        .confidence-meter {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            margin: 15px 0;
+        }
+
+        .confidence-label {
+            font-size: 0.85rem;
+            color: var(--text-secondary);
+        }
+
+        .confidence-fill {
+            height: 8px;
+            background: linear-gradient(90deg, var(--secondary-color), var(--primary-color));
+            border-radius: 4px;
+            flex-grow: 1;
+            overflow: hidden;
+        }
+
+        .confidence-value {
+            font-weight: 600;
+            font-size: 0.9rem;
+            min-width: 40px;
+            text-align: right;
+        }
+
+        .live-indicator {
+            width: 10px;
+            height: 10px;
+            background: var(--success-color);
+            border-radius: 50%;
+            animation: pulse 1.5s infinite;
+        }
+
+        @keyframes pulse {
+            0% { box-shadow: 0 0 0 0 rgba(0, 200, 83, 0.4); }
+            70% { box-shadow: 0 0 0 10px rgba(0, 200, 83, 0); }
+            100% { box-shadow: 0 0 0 0 rgba(0, 200, 83, 0); }
+        }
+
+        .signal-reasons {
+            background: var(--panel-bg);
+            border-radius: 6px;
+            padding: 12px;
+            margin-top: 10px;
+        }
+
+        .signal-reason {
+            display: flex;
+            align-items: flex-start;
+            gap: 8px;
+            margin-bottom: 8px;
+            font-size: 0.85rem;
+        }
+
+        .signal-reason:last-child {
+            margin-bottom: 0;
+        }
+
+        .reason-bullet {
+            color: var(--primary-color);
+            font-weight: bold;
+            flex-shrink: 0;
+            margin-top: 2px;
         }
 
         .signal-actions {
             display: flex;
             gap: 10px;
-            margin-top: 10px;
+            margin-top: 15px;
         }
 
         .action-button {
-            padding: 8px 15px;
+            padding: 10px 20px;
             border: none;
-            border-radius: 5px;
+            border-radius: 6px;
             cursor: pointer;
-            transition: all 0.3s ease;
+            transition: var(--transition);
+            font-family: 'Inter', sans-serif;
+            font-weight: 500;
+            font-size: 0.9rem;
+            flex: 1;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            gap: 8px;
         }
 
         .action-button.primary {
@@ -160,27 +422,88 @@
             color: white;
         }
 
+        .action-button.primary:hover {
+            background: var(--primary-dark);
+            transform: translateY(-2px);
+        }
+
         .action-button.secondary {
             background: var(--secondary-color);
             color: white;
         }
 
-        .action-button:hover {
-            opacity: 0.9;
+        .action-button.secondary:hover {
+            background: var(--secondary-dark);
+            transform: translateY(-2px);
+        }
+
+        .session-summary {
+            background: var(--panel-bg-light);
+            border-radius: 8px;
+            padding: 20px;
+            margin-bottom: 20px;
+            border-left: 4px solid var(--primary-color);
+        }
+
+        .session-summary h3 {
+            color: var(--primary-color);
+            margin-bottom: 15px;
+            font-size: 1.1rem;
+        }
+
+        .session-summary p {
+            margin-bottom: 8px;
+            font-size: 0.9rem;
+        }
+
+        .session-summary p:last-child {
+            margin-bottom: 0;
+        }
+
+        /* Responsive adjustments */
+        @media (max-width: 1200px) {
+            .main-grid {
+                grid-template-columns: 1fr;
+                height: auto;
+            }
+            
+            .analysis-panel {
+                max-height: 500px;
+            }
+        }
+
+        @media (max-width: 768px) {
+            .dashboard-header {
+                flex-direction: column;
+                gap: 15px;
+                text-align: center;
+            }
+            
+            .strategy-status-container {
+                grid-template-columns: 1fr;
+            }
+            
+            .performance-metrics {
+                grid-template-columns: 1fr;
+            }
         }
     </style>
 </head>
 <body>
     <div class="dashboard-header">
-        <h2>Options Trading</h2>
+        <h2>Deriv Options Trading</h2>
         <select class="instrument-selector" id="instrumentSelect">
             <option value="R_100">Volatility 100 Index</option>
             <option value="R_50">Volatility 50 Index</option>
             <option value="R_75">Volatility 75 Index</option>
             <option value="R_25">Volatility 25 Index</option>
+            <option value="1HZ100V">Volatility 100 (1s)</option>
+            <option value="1HZ50V">Volatility 50 (1s)</option>
+            <option value="R_10">Volatility 10 Index</option>
+            <option value="R_150">Volatility 150 Index</option>
         </select>
         <div class="account-info">
-            <span>Balance: $<span id="balance">1000.00</span></span>
+            <div class="account-balance">Balance: $<span id="balance">1000.00</span></div>
         </div>
     </div>
 
@@ -195,9 +518,15 @@
         </div>
         
         <div class="analysis-panel">
-            <h3>Strategy Analysis</h3>
-            <div id="strategyStatus"></div>
-            <div id="analysisLog"></div>
+            <h3 class="panel-title">Strategy Analysis</h3>
+            <div class="strategy-status-container" id="strategyStatus">
+                <!-- Strategies will be populated by JavaScript -->
+            </div>
+            
+            <div class="panel-title">Analysis Log</div>
+            <div class="analysis-log" id="analysisLog">
+                <!-- Log entries will be added here -->
+            </div>
             
             <div class="performance-metrics">
                 <div class="metric-card">
@@ -219,11 +548,29 @@
             </div>
 
             <div class="signal-panel">
-                <h3>Current Signal</h3>
-                <div id="currentSignal"></div>
+                <div class="signal-header">
+                    <h3 class="signal-title">Current Signal</h3>
+                    <div class="live-indicator"></div>
+                </div>
+                <div id="currentSignal">
+                    <p style="color: var(--text-secondary); font-size: 0.9rem;">Waiting for analysis...</p>
+                </div>
+                
+                <div class="confidence-meter">
+                    <span class="confidence-label">Confidence:</span>
+                    <div class="confidence-fill">
+                        <div id="confidenceFill" style="width: 0%; height: 100%; background: linear-gradient(90deg, var(--secondary-color), var(--primary-color));"></div>
+                    </div>
+                    <span class="confidence-value" id="confidenceValue">0%</span>
+                </div>
+                
                 <div class="signal-actions">
-                    <button class="action-button primary" id="executeSignal">Execute Signal</button>
-                    <button class="action-button secondary" id="ignoreSignal">Ignore</button>
+                    <button class="action-button primary" id="executeSignal">
+                        Execute Signal
+                    </button>
+                    <button class="action-button secondary" id="ignoreSignal">
+                        Ignore
+                    </button>
                 </div>
             </div>
         </div>
@@ -231,5 +578,28 @@
 
     <script src="https://cdn.jsdelivr.net/npm/lightweight-charts/dist/lightweight-charts.standalone.production.js"></script>
     <script src="options_script.js"></script>
+    
+    <script>
+        // Initialize strategy status elements
+        document.addEventListener('DOMContentLoaded', () => {
+            const strategyStatusContainer = document.getElementById('strategyStatus');
+            
+            for (const [key, strategy] of Object.entries(STRATEGIES)) {
+                const strategyElement = document.createElement('div');
+                strategyElement.className = 'strategy-status';
+                strategyElement.id = `strategy-${key}`;
+                strategyElement.innerHTML = `
+                    <div class="strategy-name">
+                        <span>${strategy.name}</span>
+                    </div>
+                    <div class="strategy-description">${strategy.description}</div>
+                    <div class="strategy-progress">
+                        <div class="progress-bar" id="progress-${key}"></div>
+                    </div>
+                `;
+                strategyStatusContainer.appendChild(strategyElement);
+            }
+        });
+    </script>
 </body>
 </html>
