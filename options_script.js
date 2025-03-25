@@ -1,5 +1,5 @@
 // Deriv Trading Bot - Options Trading Module
-// Version 1.0
+// Version 1.1 - Fixed and Enhanced
 
 // Configuration
 const CONFIG = {
@@ -208,40 +208,43 @@ let tradingSession = {
     profitTarget: 0
 };
 
-// Chart initialization
-const chart = LightweightCharts.createChart(document.getElementById('chart'), {
-    width: 800,
-    height: 400,
-    layout: {
-        background: { color: 'rgba(255, 255, 255, 0.05)' },
-        textColor: 'white',
-    },
-    grid: {
-        vertLines: { color: 'rgba(255, 255, 255, 0.1)' },
-        horzLines: { color: 'rgba(255, 255, 255, 0.1)' },
-    },
-    timeScale: {
-        timeVisible: true,
-        secondsVisible: false,
-    }
-});
+// Initialize charts
+let chart, candlestickSeries, volumeSeries;
 
-const candlestickSeries = chart.addCandlestickSeries({
-    upColor: '#00b4d8',
-    downColor: '#ff4d4d',
-    borderVisible: false,
-    wickUpColor: '#00b4d8',
-    wickDownColor: '#ff4d4d',
-});
+function initializeCharts() {
+    chart = LightweightCharts.createChart(document.getElementById('chart'), {
+        width: 800,
+        height: 400,
+        layout: {
+            background: { color: 'rgba(255, 255, 255, 0.05)' },
+            textColor: 'white',
+        },
+        grid: {
+            vertLines: { color: 'rgba(255, 255, 255, 0.1)' },
+            horzLines: { color: 'rgba(255, 255, 255, 0.1)' },
+        },
+        timeScale: {
+            timeVisible: true,
+            secondsVisible: false,
+        }
+    });
 
-// Add volume series
-const volumeSeries = chart.addHistogramSeries({
-    color: 'rgba(0, 180, 216, 0.3)',
-    priceFormat: {
-        type: 'volume',
-    },
-    priceScaleId: '' // set as an overlay by setting a blank priceScaleId
-});
+    candlestickSeries = chart.addCandlestickSeries({
+        upColor: '#00b4d8',
+        downColor: '#ff4d4d',
+        borderVisible: false,
+        wickUpColor: '#00b4d8',
+        wickDownColor: '#ff4d4d',
+    });
+
+    volumeSeries = chart.addHistogramSeries({
+        color: 'rgba(0, 180, 216, 0.3)',
+        priceFormat: {
+            type: 'volume',
+        },
+        priceScaleId: ''
+    });
+}
 
 // Trading Engine Class
 class TradingEngine {
@@ -269,6 +272,14 @@ class TradingEngine {
         for (const [key, strategy] of Object.entries(STRATEGIES)) {
             if (!this.activeStrategies.has(key)) continue;
             
+            // Update strategy status UI
+            const strategyElement = document.getElementById(`strategy-${key}`);
+            if (strategyElement) {
+                strategyElement.classList.add('analyzing');
+                strategyElement.classList.remove('completed', 'error');
+                document.getElementById(`progress-${key}`).style.width = '50%';
+            }
+
             strategyPromises.push(
                 strategy.analysis(ticks)
                     .then(result => {
@@ -279,17 +290,37 @@ class TradingEngine {
                             confidence: result.confidence * strategy.weight,
                             reasoning: result.reasoning
                         });
+                        
+                        // Update strategy status UI
+                        if (strategyElement) {
+                            strategyElement.classList.remove('analyzing');
+                            strategyElement.classList.add('completed');
+                            document.getElementById(`progress-${key}`).style.width = '100%';
+                        }
+                        
                         updateAnalysisLog(`[${strategy.name}] ${result.reasoning}`);
+                        return analysisResults;
                     })
                     .catch(error => {
                         console.error(`Strategy ${key} failed:`, error);
+                        
+                        // Update strategy status UI
+                        if (strategyElement) {
+                            strategyElement.classList.remove('analyzing');
+                            strategyElement.classList.add('error');
+                            document.getElementById(`progress-${key}`).style.width = '100%';
+                            document.getElementById(`progress-${key}`).style.background = 'var(--error-color)';
+                        }
+                        
                         updateAnalysisLog(`[${strategy.name}] Analysis failed: ${error.message}`);
+                        return null;
                     })
             );
         }
 
-        await Promise.all(strategyPromises);
-        return this.consolidateSignals(analysisResults);
+        const results = await Promise.all(strategyPromises);
+        const validResults = results.flat().filter(r => r !== null);
+        return this.consolidateSignals(validResults);
     }
 
     calculateMarketConditions(ticks) {
@@ -425,16 +456,33 @@ function connectToDeriv() {
     
     derivWS.onopen = () => {
         console.log('Connected to Deriv');
-        authenticate(getOAuthToken());
+        const token = getOAuthToken();
+        if (token) {
+            authenticate(token);
+        } else {
+            updateAnalysisLog('Error: No authentication token found');
+            window.location.href = 'index.html';
+        }
     };
 
     derivWS.onmessage = (msg) => {
-        const data = JSON.parse(msg.data);
-        handleWebSocketMessage(data);
+        try {
+            const data = JSON.parse(msg.data);
+            handleWebSocketMessage(data);
+        } catch (error) {
+            console.error('Error parsing WebSocket message:', error);
+            updateAnalysisLog('Error processing market data');
+        }
+    };
+
+    derivWS.onerror = (error) => {
+        console.error('WebSocket error:', error);
+        updateAnalysisLog('WebSocket connection error');
     };
 
     derivWS.onclose = () => {
         console.log('Disconnected from Deriv');
+        updateAnalysisLog('Disconnected from Deriv - attempting to reconnect...');
         setTimeout(connectToDeriv, 5000); // Reconnect after 5 seconds
     };
 }
@@ -462,6 +510,11 @@ function handleWebSocketMessage(data) {
         case 'balance':
             updateBalance(data.balance);
             break;
+        case 'proposal_open_contract':
+            handleTradeResult(data);
+            break;
+        default:
+            console.log('Unhandled message type:', data.msg_type);
     }
 }
 
@@ -487,16 +540,44 @@ function handleAuthorization(data) {
         tradingSession.profitTarget = accountBalance * CONFIG.SESSION_PROFIT_TARGET;
         updateAnalysisLog(`Session started. Profit target: $${tradingSession.profitTarget.toFixed(2)}`);
         
+        // Initialize strategy status UI
+        initializeStrategyStatus();
+        
         // Request initial tick history
         requestTickHistory();
     } else {
         updateAnalysisLog('Authentication failed');
+        window.location.href = 'index.html';
+    }
+}
+
+function initializeStrategyStatus() {
+    const strategyStatusContainer = document.getElementById('strategyStatus');
+    strategyStatusContainer.innerHTML = '';
+    
+    for (const [key, strategy] of Object.entries(STRATEGIES)) {
+        const strategyElement = document.createElement('div');
+        strategyElement.className = 'strategy-status';
+        strategyElement.id = `strategy-${key}`;
+        strategyElement.innerHTML = `
+            <div class="strategy-name">
+                <span>${strategy.name}</span>
+            </div>
+            <div class="strategy-description">${strategy.description}</div>
+            <div class="strategy-progress">
+                <div class="progress-bar" id="progress-${key}"></div>
+            </div>
+        `;
+        strategyStatusContainer.appendChild(strategyElement);
     }
 }
 
 // Market Data Processing
 function processTickHistory(history) {
-    if (!history || !history.candles) return;
+    if (!history || !history.candles) {
+        updateAnalysisLog('Error: Invalid tick history data received');
+        return;
+    }
     
     tickHistory = history.candles.map(candle => ({
         epoch: candle.epoch,
@@ -514,6 +595,11 @@ function processTickHistory(history) {
 }
 
 function processTickUpdate(tick) {
+    if (!tick || !tick.epoch || !tick.close) {
+        updateAnalysisLog('Error: Invalid tick data received');
+        return;
+    }
+    
     const newTick = {
         epoch: tick.epoch,
         open: parseFloat(tick.open),
@@ -539,24 +625,31 @@ function processTickUpdate(tick) {
 }
 
 function updateChart(data) {
-    const formattedData = data.map(tick => ({
-        time: tick.epoch,
-        open: tick.open,
-        high: tick.high,
-        low: tick.low,
-        close: tick.close
-    }));
+    if (!data || data.length === 0) return;
     
-    candlestickSeries.setData(formattedData);
-    
-    // Update volume data (simplified)
-    const volumeData = data.map((tick, i) => ({
-        time: tick.epoch,
-        value: i > 0 ? Math.abs(tick.close - data[i-1].close) * 10000 : 0,
-        color: i > 0 ? (tick.close > data[i-1].close ? 'rgba(0, 180, 216, 0.5)' : 'rgba(255, 77, 77, 0.5)') : 'rgba(0, 180, 216, 0.5)'
-    }));
-    
-    volumeSeries.setData(volumeData);
+    try {
+        const formattedData = data.map(tick => ({
+            time: tick.epoch,
+            open: tick.open,
+            high: tick.high,
+            low: tick.low,
+            close: tick.close
+        }));
+        
+        candlestickSeries.setData(formattedData);
+        
+        // Update volume data (simplified)
+        const volumeData = data.map((tick, i) => ({
+            time: tick.epoch,
+            value: i > 0 ? Math.abs(tick.close - data[i-1].close) * 10000 : 0,
+            color: i > 0 ? (tick.close > data[i-1].close ? 'rgba(0, 180, 216, 0.5)' : 'rgba(255, 77, 77, 0.5)') : 'rgba(0, 180, 216, 0.5)'
+        }));
+        
+        volumeSeries.setData(volumeData);
+    } catch (error) {
+        console.error('Error updating chart:', error);
+        updateAnalysisLog('Error updating chart data');
+    }
 }
 
 // Trading Functions
@@ -580,19 +673,32 @@ async function analyzeMarket() {
 }
 
 function displayAnalysisResults(analysis) {
+    if (!analysis) return;
+    
     document.getElementById('confidenceValue').textContent = `${(analysis.confidence * 100).toFixed(1)}%`;
     document.getElementById('confidenceFill').style.width = `${analysis.confidence * 100}%`;
     
     const signalElement = document.getElementById('currentSignal');
-    signalElement.innerHTML = `
-        <h4>${analysis.signal} (${(analysis.confidence * 100).toFixed(1)}% confidence)</h4>
-        <ul>
-            ${analysis.reasons.map(r => `<li>${r}</li>`).join('')}
-        </ul>
-    `;
+    if (signalElement) {
+        signalElement.innerHTML = `
+            <div class="signal-reasons">
+                ${analysis.reasons.map((r, i) => `
+                    <div class="signal-reason">
+                        <span class="reason-bullet">•</span>
+                        <span>${r}</span>
+                    </div>
+                `).join('')}
+            </div>
+        `;
+    }
 }
 
 function executeTrade(signal) {
+    if (!signal || !signal.signal) {
+        updateAnalysisLog("Error: Invalid trade signal");
+        return;
+    }
+    
     const engine = new TradingEngine();
     const stake = engine.calculateDynamicStake(accountBalance);
     
@@ -675,7 +781,10 @@ function handleTradeResult(data) {
 function updateAnalysisLog(message, data = null) {
     const logEntry = document.createElement('div');
     logEntry.className = 'log-entry';
-    logEntry.innerHTML = `<small>[${new Date().toLocaleTimeString()}]</small> ${message}`;
+    logEntry.innerHTML = `
+        <div class="log-time">${new Date().toLocaleTimeString()}</div>
+        <div class="log-message">${message}</div>
+    `;
     
     if (data) {
         const pre = document.createElement('pre');
@@ -684,28 +793,38 @@ function updateAnalysisLog(message, data = null) {
     }
     
     const logContainer = document.getElementById('analysisLog');
-    logContainer.prepend(logEntry);
-    
-    // Auto-scroll and limit log entries
-    if (logContainer.children.length > 100) {
-        logContainer.removeChild(logContainer.lastChild);
+    if (logContainer) {
+        logContainer.prepend(logEntry);
+        
+        // Auto-scroll and limit log entries
+        if (logContainer.children.length > 100) {
+            logContainer.removeChild(logContainer.lastChild);
+        }
     }
 }
 
 function updateBalance(balance) {
     accountBalance = balance;
-    document.getElementById('balance').textContent = balance.toFixed(2);
+    const balanceElement = document.getElementById('balance');
+    if (balanceElement) {
+        balanceElement.textContent = balance.toFixed(2);
+    }
 }
 
 function updatePerformanceMetrics() {
-    document.getElementById('pnl').textContent = `$${tradingSession.pnl.toFixed(2)}`;
-    document.getElementById('winRate').textContent = `${(tradingSession.winRate * 100).toFixed(1)}%`;
-    document.getElementById('totalTrades').textContent = tradingSession.trades.length;
+    const pnlElement = document.getElementById('pnl');
+    const winRateElement = document.getElementById('winRate');
+    const totalTradesElement = document.getElementById('totalTrades');
+    const profitFactorElement = document.getElementById('profitFactor');
+    
+    if (pnlElement) pnlElement.textContent = `$${tradingSession.pnl.toFixed(2)}`;
+    if (winRateElement) winRateElement.textContent = `${(tradingSession.winRate * 100).toFixed(1)}%`;
+    if (totalTradesElement) totalTradesElement.textContent = tradingSession.trades.length;
     
     const wins = tradingSession.trades.filter(t => t.isWin).length;
     const losses = tradingSession.trades.length - wins;
     const profitFactor = losses > 0 ? (wins / losses) : wins;
-    document.getElementById('profitFactor').textContent = profitFactor.toFixed(2);
+    if (profitFactorElement) profitFactorElement.textContent = profitFactor.toFixed(2);
 }
 
 function showSessionSummary() {
@@ -723,7 +842,10 @@ function showSessionSummary() {
     summaryElement.className = 'session-summary';
     summaryElement.innerHTML = summary;
     
-    document.getElementById('analysisLog').prepend(summaryElement);
+    const logContainer = document.getElementById('analysisLog');
+    if (logContainer) {
+        logContainer.prepend(summaryElement);
+    }
 }
 
 // Instrument Handling
@@ -738,6 +860,8 @@ function requestTickHistory() {
             style: 'candles',
             subscribe: 1
         }));
+    } else {
+        updateAnalysisLog('Error: WebSocket not ready for tick history request');
     }
 }
 
@@ -747,35 +871,44 @@ function getOAuthToken() {
     return params.get('token');
 }
 
-document.addEventListener('DOMContentLoaded', () => {
+// Initialize the application
+function initializeApp() {
+    initializeCharts();
     connectToDeriv();
     
     // Instrument selection
-    document.getElementById('instrumentSelect').addEventListener('change', (e) => {
-        currentInstrument = e.target.value;
-        updateAnalysisLog(`Switched to instrument: ${currentInstrument}`);
-        requestTickHistory();
-    });
+    const instrumentSelect = document.getElementById('instrumentSelect');
+    if (instrumentSelect) {
+        instrumentSelect.addEventListener('change', (e) => {
+            currentInstrument = e.target.value;
+            updateAnalysisLog(`Switched to instrument: ${currentInstrument}`);
+            requestTickHistory();
+        });
+    }
     
     // Timeframe buttons
-    document.getElementById('timeframe1m').addEventListener('click', () => changeTimeframe(60));
-    document.getElementById('timeframe5m').addEventListener('click', () => changeTimeframe(300));
-    document.getElementById('timeframe15m').addEventListener('click', () => changeTimeframe(900));
-    document.getElementById('timeframe1h').addEventListener('click', () => changeTimeframe(3600));
+    document.getElementById('timeframe1m')?.addEventListener('click', () => changeTimeframe(60));
+    document.getElementById('timeframe5m')?.addEventListener('click', () => changeTimeframe(300));
+    document.getElementById('timeframe15m')?.addEventListener('click', () => changeTimeframe(900));
+    document.getElementById('timeframe1h')?.addEventListener('click', () => changeTimeframe(3600));
     
     // Signal actions
-    document.getElementById('executeSignal').addEventListener('click', () => {
+    document.getElementById('executeSignal')?.addEventListener('click', () => {
         const signalElement = document.getElementById('currentSignal');
-        const signalMatch = signalElement.textContent.match(/(CALL|PUT)/);
-        if (signalMatch) {
-            executeTrade({ signal: signalMatch[0], confidence: 1 });
+        if (signalElement) {
+            const signalMatch = signalElement.textContent.match(/(CALL|PUT)/);
+            if (signalMatch) {
+                executeTrade({ signal: signalMatch[0], confidence: 1 });
+            } else {
+                updateAnalysisLog("No valid signal to execute");
+            }
         }
     });
     
-    document.getElementById('ignoreSignal').addEventListener('click', () => {
+    document.getElementById('ignoreSignal')?.addEventListener('click', () => {
         updateAnalysisLog("Signal ignored by user");
     });
-});
+}
 
 function changeTimeframe(seconds) {
     if (derivWS && derivWS.readyState === WebSocket.OPEN) {
@@ -790,5 +923,10 @@ function changeTimeframe(seconds) {
         }));
         
         updateAnalysisLog(`Changed timeframe to ${seconds/60} minutes`);
+    } else {
+        updateAnalysisLog('Error: WebSocket not ready for timeframe change');
     }
 }
+
+// Start the application when DOM is loaded
+document.addEventListener('DOMContentLoaded', initializeApp);
