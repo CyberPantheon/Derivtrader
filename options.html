@@ -579,27 +579,6 @@
     <script src="https://cdn.jsdelivr.net/npm/lightweight-charts/dist/lightweight-charts.standalone.production.js"></script>
     <script src="options_script.js"></script>
     
-    <script>
-        // Initialize strategy status elements
-        document.addEventListener('DOMContentLoaded', () => {
-            const strategyStatusContainer = document.getElementById('strategyStatus');
-            
-            for (const [key, strategy] of Object.entries(STRATEGIES)) {
-                const strategyElement = document.createElement('div');
-                strategyElement.className = 'strategy-status';
-                strategyElement.id = `strategy-${key}`;
-                strategyElement.innerHTML = `
-                    <div class="strategy-name">
-                        <span>${strategy.name}</span>
-                    </div>
-                    <div class="strategy-description">${strategy.description}</div>
-                    <div class="strategy-progress">
-                        <div class="progress-bar" id="progress-${key}"></div>
-                    </div>
-                `;
-                strategyStatusContainer.appendChild(strategyElement);
-            }
-        });
-    </script>
+  
 </body>
 </html>
