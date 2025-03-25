@@ -1,0 +1,155 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>Deriv Trading Dashboard - Login</title>
+    <style>
+        :root {
+            --primary-color: #00b4d8;
+            --background: #0a192f;
+            --panel-bg: rgba(255, 255, 255, 0.05);
+        }
+
+        body {
+            background: var(--background);
+            color: white;
+            font-family: 'Roboto', sans-serif;
+            margin: 0;
+            padding: 0;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            min-height: 100vh;
+        }
+
+        .login-container {
+            background: var(--panel-bg);
+            backdrop-filter: blur(10px);
+            padding: 40px;
+            border-radius: 15px;
+            text-align: center;
+            max-width: 400px;
+            width: 90%;
+        }
+
+        .logo {
+            width: 120px;
+            margin-bottom: 30px;
+        }
+
+        h1 {
+            margin: 0 0 20px 0;
+            color: var(--primary-color);
+        }
+
+        .login-button {
+            background: var(--primary-color);
+            color: white;
+            border: none;
+            padding: 15px 30px;
+            border-radius: 8px;
+            font-size: 1.1em;
+            cursor: pointer;
+            transition: all 0.3s ease;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            gap: 10px;
+            margin: 0 auto;
+        }
+
+        .login-button:hover {
+            opacity: 0.9;
+            transform: translateY(-2px);
+        }
+
+        .features {
+            margin-top: 40px;
+            text-align: left;
+        }
+
+        .feature-item {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            margin: 15px 0;
+            color: #ccc;
+        }
+
+        .feature-item::before {
+            content: "✓";
+            color: var(--primary-color);
+            font-weight: bold;
+        }
+
+        .loading {
+            display: none;
+            margin-top: 20px;
+        }
+
+        .loading-spinner {
+            width: 40px;
+            height: 40px;
+            border: 4px solid rgba(255, 255, 255, 0.1);
+            border-left-color: var(--primary-color);
+            border-radius: 50%;
+            animation: spin 1s linear infinite;
+            margin: 0 auto;
+        }
+
+        @keyframes spin {
+            to {
+                transform: rotate(360deg);
+            }
+        }
+    </style>
+</head>
+<body>
+    <div class="login-container">
+        <img src="https://deriv.com/static/logo.svg" alt="Deriv Logo" class="logo">
+        <h1>Deriv Trading Dashboard</h1>
+        <button class="login-button" id="loginButton" onclick="login()">
+            <span>Login with Deriv</span>
+        </button>
+        <div class="loading" id="loading">
+            <div class="loading-spinner"></div>
+        </div>
+        <div class="features">
+            <div class="feature-item">Advanced Options Trading</div>
+            <div class="feature-item">Real-time Market Analysis</div>
+            <div class="feature-item">Smart Trading Signals</div>
+            <div class="feature-item">Performance Analytics</div>
+            <div class="feature-item">Risk Management</div>
+        </div>
+    </div>
+
+    <script>
+        const APP_ID = '69958'; // Deriv app ID
+        const REDIRECT_URI = window.location.origin + '/options.html';
+
+        function login() {
+            const loading = document.getElementById('loading');
+            const loginButton = document.getElementById('loginButton');
+            
+            loading.style.display = 'block';
+            loginButton.style.display = 'none';
+
+            const authUrl = `https://oauth.deriv.com/oauth2/authorize?app_id=${APP_ID}&l=EN&redirect_uri=${encodeURIComponent(REDIRECT_URI)}`;
+            window.location.href = authUrl;
+        }
+
+        // Check if we're returning from OAuth
+        window.onload = function() {
+            const urlParams = new URLSearchParams(window.location.search);
+            const token = urlParams.get('token');
+            
+            if (token) {
+                // Store the token securely
+                localStorage.setItem('deriv_token', token);
+                // Redirect to options page
+                window.location.href = 'options.html';
+            }
+        };
+    </script>
+</body>
+</html>
