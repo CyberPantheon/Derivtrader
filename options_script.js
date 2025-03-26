@@ -1,7 +1,66 @@
 // options_script.js - Complete Implementation
-const DerivAPIBrowser = require('@deriv/deriv-api/dist/DerivAPIBrowser');
-const { LightweightCharts } = require('lightweight-charts');
-const talib = require('talib'); // For technical indicators
+let api;
+let accounts = [];
+
+// Initialize API and enable authenticate button
+function initializeAPI() {
+    api = new DerivAPIBrowser({ endpoint: 'frontend.binary.com', appId: 69958 });
+    document.getElementById('authenticateBtn').disabled = false;
+}
+
+// Handle authentication
+async function handleAuthentication() {
+    try {
+        const response = await api.authorize(localStorage.getItem('deriv_token'));
+        accounts = await api.accountList();
+        populateAccountDropdown();
+    } catch (error) {
+        // If not logged in, prompt for OAuth
+        window.location.href = `https://oauth.deriv.com/oauth2/authorize?app_id=${APP_ID}&l=en`;
+    }
+}
+
+// Populate account dropdown
+function populateAccountDropdown() {
+    const accountList = document.getElementById('accountList');
+    accountList.innerHTML = accounts.map(acc => 
+        `<option value="${acc.account}">${acc.account_type} (${acc.currency})</option>`
+    ).join('');
+    accountList.disabled = false;
+}
+
+// Event listeners
+document.getElementById('authenticateBtn').addEventListener('click', handleAuthentication);
+
+// Initialize on load
+window.addEventListener('DOMContentLoaded', () => {
+    initializeAPI();
+    // Check for OAuth redirect
+    const urlParams = new URLSearchParams(window.location.search);
+    const token = urlParams.get('token');
+    if (token) {
+        localStorage.setItem('deriv_token', token);
+        window.location.href = window.location.pathname; // Clean URL
+    }
+});
+
+// After populating accounts, enable instrument controls
+document.getElementById('accountList').addEventListener('change', async (e) => {
+    currentAccount = accounts.find(acc => acc.account === e.target.value);
+    document.getElementById('accountBalance').textContent = `${currentAccount.balance} ${currentAccount.currency}`;
+    document.getElementById('instrumentList').disabled = false;
+    // Load instruments for the account's market type
+    const instruments = await api.activeSymbols({ active_symbols: 'brief' });
+    populateInstrumentDropdown(instruments);
+});
+
+function populateInstrumentDropdown(instruments) {
+    const instrumentList = document.getElementById('instrumentList');
+    instrumentList.innerHTML = instruments.map(sym => 
+        `<option value="${sym.symbol}">${sym.display_name}</option>`
+    ).join('');
+    instrumentList.disabled = false;
+}
 
 const APP_ID = 69958;
 const API_ENDPOINT = 'frontend.binary.com';
