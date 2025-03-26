@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
     <meta charset="UTF-8">
-    <title>Deriv Options Trading Dashboard</title>
+    <title>AI Trading Signal Assistant - Deriv</title>
     <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/lightweight-charts/dist/lightweight-charts.css">
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
     <style>
@@ -63,6 +63,44 @@
             color: transparent;
         }
 
+        .account-selector {
+            padding: 10px 20px;
+            background: rgba(0, 180, 216, 0.1);
+            border: 1px solid var(--primary-color);
+            border-radius: 8px;
+            color: white;
+            cursor: pointer;
+            font-family: 'Inter', sans-serif;
+            font-weight: 500;
+            transition: var(--transition);
+            margin-right: 10px;
+        }
+
+        .account-selector:hover {
+            background: rgba(0, 180, 216, 0.2);
+        }
+
+        .account-selector:focus {
+            outline: none;
+            box-shadow: 0 0 0 2px rgba(0, 180, 216, 0.3);
+        }
+
+        .account-authenticate {
+            padding: 10px 20px;
+            background: var(--primary-color);
+            border: none;
+            border-radius: 8px;
+            color: white;
+            cursor: pointer;
+            font-family: 'Inter', sans-serif;
+            font-weight: 500;
+            transition: var(--transition);
+        }
+
+        .account-authenticate:hover {
+            background: var(--primary-dark);
+        }
+
         .instrument-selector {
             padding: 10px 20px;
             background: rgba(0, 180, 216, 0.1);
@@ -73,15 +111,32 @@
             font-family: 'Inter', sans-serif;
             font-weight: 500;
             transition: var(--transition);
+            margin-right: 10px;
         }
 
         .instrument-selector:hover {
             background: rgba(0, 180, 216, 0.2);
         }
 
-        .instrument-selector:focus {
-            outline: none;
-            box-shadow: 0 0 0 2px rgba(0, 180, 216, 0.3);
+        .instrument-analyze {
+            padding: 10px 20px;
+            background: var(--warning-color);
+            border: none;
+            border-radius: 8px;
+            color: white;
+            cursor: pointer;
+            font-family: 'Inter', sans-serif;
+            font-weight: 500;
+            transition: var(--transition);
+        }
+
+        .instrument-analyze:hover {
+            background: #e09a00;
+        }
+
+        .instrument-analyze:disabled {
+            background: rgba(255, 171, 0, 0.3);
+            cursor: not-allowed;
         }
 
         .account-info {
@@ -479,6 +534,18 @@
                 text-align: center;
             }
             
+            .account-controls, .instrument-controls {
+                flex-direction: column;
+                width: 100%;
+            }
+            
+            .account-selector, .instrument-selector,
+            .account-authenticate, .instrument-analyze {
+                width: 100%;
+                margin-right: 0;
+                margin-bottom: 10px;
+            }
+            
             .strategy-status-container {
                 grid-template-columns: 1fr;
             }
@@ -487,28 +554,37 @@
                 grid-template-columns: 1fr;
             }
         }
+
+        /* Account and Instrument Controls */
+        .account-controls, .instrument-controls {
+            display: flex;
+            align-items: center;
+            margin-bottom: 10px;
+        }
     </style>
 </head>
 <body>
     <div class="dashboard-header">
-        <h2>Deriv Options Trading</h2>
-        <select class="instrument-selector" id="instrumentSelect">
-            <option value="R_100">Volatility 100 Index</option>
-            <option value="R_50">Volatility 50 Index</option>
-            <option value="R_75">Volatility 75 Index</option>
-            <option value="R_25">Volatility 25 Index</option>
-            <option value="1HZ100V">Volatility 100 (1s)</option>
-            <option value="1HZ50V">Volatility 50 (1s)</option>
-            <option value="R_10">Volatility 10 Index</option>
-            <option value="R_150">Volatility 150 Index</option>
-        </select>
+        <h2>AI Trading Signal Assistant</h2>
+        <div class="account-controls">
+            <select class="account-selector" id="accountList" disabled>
+                <option>Loading accounts...</option>
+            </select>
+            <button class="account-authenticate" id="authenticateBtn" disabled>Authenticate</button>
+        </div>
+        <div class="instrument-controls">
+            <select class="instrument-selector" id="instrumentList" disabled>
+                <option>Loading instruments...</option>
+            </select>
+            <button class="instrument-analyze" id="analyzeBtn" disabled>Analyze</button>
+        </div>
         <div class="account-info">
-            <div class="account-balance">Balance: $<span id="balance">1000.00</span></div>
+            <div class="account-balance">Balance: <span id="accountBalance">--</span></div>
         </div>
     </div>
 
     <div class="main-grid">
-        <div class="chart-container" id="chart">
+        <div class="chart-container" id="mainChart">
             <div class="chart-controls">
                 <button class="chart-button" id="timeframe1m">1m</button>
                 <button class="chart-button" id="timeframe5m">5m</button>
@@ -577,8 +653,218 @@
     </div>
 
     <script src="https://cdn.jsdelivr.net/npm/lightweight-charts/dist/lightweight-charts.standalone.production.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@deriv/deriv-api/dist/DerivAPIBrowser.min.js"></script>
+    
+    <!-- Your Script -->
     <script src="options_script.js"></script>
     
-  
+    <!-- Frontend Sync Script -->
+    <script>
+        // Global variables
+        let currentChart = null;
+        let currentSeries = null;
+        let accountList = [];
+        let instrumentList = [];
+        
+        // Initialize after OAuth redirect
+        document.addEventListener('DOMContentLoaded', function() {
+            // The user is already authenticated via OAuth
+            // Now we can initialize the Deriv API connection
+            initializeAPI();
+            
+            // Load accounts and instruments
+            loadAccounts();
+            loadInstruments();
+            
+            // Set up event listeners
+            document.getElementById('authenticateBtn').addEventListener('click', authenticateAccount);
+            document.getElementById('analyzeBtn').addEventListener('click', analyzeInstrument);
+            document.getElementById('executeSignal').addEventListener('click', executeTradeFromSignal);
+            
+            // Initialize chart
+            initializeChart();
+        });
+        
+        // Initialize Deriv API connection
+        function initializeAPI() {
+            // The app is already authenticated via OAuth
+            // We can now use the Deriv API
+            api = new DerivAPIBrowser({ endpoint: 'frontend.binary.com', appId: 69958 });
+        }
+        
+        // Load user accounts
+        function loadAccounts() {
+            // Simulate loading accounts (replace with actual API call)
+            setTimeout(() => {
+                accountList = [
+                    { loginid: 'CR1234567', account_type: 'Real', currency: 'USD' },
+                    { loginid: 'VR1234567', account_type: 'Virtual', currency: 'USD' }
+                ];
+                
+                const select = document.getElementById('accountList');
+                select.innerHTML = '';
+                accountList.forEach(account => {
+                    const option = document.createElement('option');
+                    option.value = account.loginid;
+                    option.textContent = `${account.account_type} (${account.currency})`;
+                    select.appendChild(option);
+                });
+                
+                select.disabled = false;
+                document.getElementById('authenticateBtn').disabled = false;
+            }, 500);
+        }
+        
+        // Authenticate selected account
+        function authenticateAccount() {
+            const accountId = document.getElementById('accountList').value;
+            const account = accountList.find(acc => acc.loginid === accountId);
+            
+            // Simulate authentication (replace with actual API call)
+            setTimeout(() => {
+                currentAccount = {
+                    loginid: accountId,
+                    currency: account.currency,
+                    balance: 1000.00,
+                    open_positions: 0
+                };
+                
+                // Update UI
+                document.getElementById('accountBalance').textContent = 
+                    `${currentAccount.balance} ${currentAccount.currency}`;
+                
+                // Enable instrument analysis
+                document.getElementById('instrumentList').disabled = false;
+                document.getElementById('analyzeBtn').disabled = false;
+                
+                // Add to log
+                addLogEntry(`Account ${accountId} authenticated successfully`);
+            }, 500);
+        }
+        
+        // Load trading instruments
+        function loadInstruments() {
+            // Simulate loading instruments (replace with actual API call)
+            setTimeout(() => {
+                instrumentList = [
+                    { symbol: 'R_100', display_name: 'Volatility 100 Index' },
+                    { symbol: 'R_50', display_name: 'Volatility 50 Index' },
+                    { symbol: 'R_75', display_name: 'Volatility 75 Index' },
+                    { symbol: '1HZ100V', display_name: 'Volatility 100 (1s)' },
+                    { symbol: '1HZ50V', display_name: 'Volatility 50 (1s)' }
+                ];
+                
+                const select = document.getElementById('instrumentList');
+                select.innerHTML = '';
+                instrumentList.forEach(instrument => {
+                    const option = document.createElement('option');
+                    option.value = instrument.symbol;
+                    option.textContent = instrument.display_name;
+                    select.appendChild(option);
+                });
+            }, 500);
+        }
+        
+        // Analyze selected instrument
+        function analyzeInstrument() {
+            const instrument = document.getElementById('instrumentList').value;
+            currentInstrument = instrument;
+            
+            // Add to log
+            addLogEntry(`Starting analysis for ${instrument}`);
+            
+            // Call your script's analyze function
+            analyzeInstrument();
+        }
+        
+        // Initialize TradingView chart
+        function initializeChart() {
+            const chartContainer = document.getElementById('mainChart');
+            currentChart = LightweightCharts.createChart(chartContainer, {
+                width: chartContainer.clientWidth,
+                height: chartContainer.clientHeight,
+                layout: {
+                    backgroundColor: 'transparent',
+                    textColor: 'rgba(255, 255, 255, 0.9)',
+                },
+                grid: {
+                    vertLines: { color: 'rgba(255, 255, 255, 0.1)' },
+                    horzLines: { color: 'rgba(255, 255, 255, 0.1)' },
+                },
+                crosshair: {
+                    mode: LightweightCharts.CrosshairMode.Normal,
+                },
+                rightPriceScale: {
+                    borderColor: 'rgba(255, 255, 255, 0.1)',
+                },
+                timeScale: {
+                    borderColor: 'rgba(255, 255, 255, 0.1)',
+                },
+            });
+            
+            currentSeries = currentChart.addCandlestickSeries({
+                upColor: '#26a69a',
+                downColor: '#ef5350',
+                borderDownColor: '#ef5350',
+                borderUpColor: '#26a69a',
+                wickDownColor: '#ef5350',
+                wickUpColor: '#26a69a',
+            });
+        }
+        
+        // Add entry to analysis log
+        function addLogEntry(message) {
+            const logContainer = document.getElementById('analysisLog');
+            const logEntry = document.createElement('div');
+            logEntry.className = 'log-entry';
+            
+            const now = new Date();
+            logEntry.innerHTML = `
+                <div class="log-time">${now.toLocaleTimeString()}</div>
+                <div class="log-message">${message}</div>
+            `;
+            
+            logContainer.prepend(logEntry);
+        }
+        
+        // Execute trade from signal
+        function executeTradeFromSignal() {
+            const direction = document.getElementById('currentSignal').getAttribute('data-direction');
+            if (direction) {
+                executeTrade(direction);
+            }
+        }
+        
+        // Update signal display
+        function updateSignalDisplay(signal) {
+            const signalElement = document.getElementById('currentSignal');
+            const confidenceFill = document.getElementById('confidenceFill');
+            const confidenceValue = document.getElementById('confidenceValue');
+            
+            signalElement.innerHTML = `
+                <p>Direction: <strong class="${signal.direction === 'BUY' ? 'positive' : 'negative'}">
+                    ${signal.direction}
+                </strong></p>
+                <p>Instrument: <strong>${currentInstrument}</strong></p>
+            `;
+            signalElement.setAttribute('data-direction', signal.direction);
+            
+            confidenceFill.style.width = `${signal.confidence}%`;
+            confidenceValue.textContent = `${signal.confidence.toFixed(1)}%`;
+            
+            // Add to log
+            addLogEntry(`New signal generated: ${signal.direction} with ${signal.confidence.toFixed(1)}% confidence`);
+        }
+        
+        // Update performance metrics
+        function updatePerformanceMetrics() {
+            // This would be updated based on your trade history
+            // For now we'll simulate some data
+            document.getElementById('winRate').textContent = '75%';
+            document.getElementById('pnl').textContent = '$245.50';
+            document.getElementById('totalTrades').textContent = '12';
+            document.getElementById('profitFactor').textContent = '1.85';
+        }
+    </script>
 </body>
 </html>
