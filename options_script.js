@@ -1,6 +1,6 @@
-// options_script.js - Complete Fixed Implementation
+// options_script.js - Fixed Implementation
 const APP_ID = 69958;
-const API_ENDPOINT = 'frontend.binary.com';
+const API_ENDPOINT = 'wss://ws.binaryws.com/websockets/v3';
 const MAX_TICKS = 10000;
 const PREDICTION_WINDOW = 5; // minutes
 
@@ -18,30 +18,6 @@ let strategyPerformance = {};
 let lastSignalTime = 0;
 let accounts = [];
 let instruments = [];
-
-// Initialize with default weights
-const strategyWeights = {
-    priceAction: 1.2,
-    breakout: 1.1,
-    trendFollowing: 1.0,
-    meanReversion: 0.9,
-    momentum: 1.0,
-    supportResistance: 1.1,
-    supplyDemand: 1.0,
-    reversal: 1.3,
-    scalping: 0.8,
-    martingale: 0.7,
-    neuralNetwork: 1.4,
-    bigMoneyFlow: 1.2,
-    deltaGamma: 1.1,
-    patternRecognition: 1.3,
-    fibonacci: 1.0,
-    vwap: 1.1,
-    multiTimeframe: 1.2,
-    orderBook: 1.0,
-    historicalSuccess: 1.3,
-    selfLearning: 1.5
-};
 
 // DOM Elements
 const elements = {
@@ -69,9 +45,50 @@ const elements = {
 
 // Initialize API Connection
 function initializeAPI() {
-    api = new DerivAPIBrowser({ endpoint: API_ENDPOINT, appId: APP_ID });
-    setupEventListeners();
-    checkForOAuthToken();
+    try {
+        api = new WebSocket(API_ENDPOINT);
+        
+        api.onopen = function() {
+            addToLog('Connected to Deriv API', 'success');
+            checkForOAuthToken();
+        };
+        
+        api.onerror = function(error) {
+            console.error('WebSocket error:', error);
+            addToLog('Connection error. Please refresh the page.', 'error');
+        };
+        
+        api.onclose = function() {
+            addToLog('Disconnected from Deriv API', 'warning');
+        };
+        
+        api.onmessage = function(msg) {
+            const response = JSON.parse(msg.data);
+            handleAPIResponse(response);
+        };
+        
+        setupEventListeners();
+    } catch (error) {
+        console.error('API initialization failed:', error);
+        addToLog('Failed to initialize API connection', 'error');
+    }
+}
+
+// Handle API responses
+function handleAPIResponse(response) {
+    if (response.error) {
+        console.error('API error:', response.error);
+        addToLog(response.error.message, 'error');
+        return;
+    }
+    
+    if (response.msg_type === 'authorize') {
+        handleAuthorizationResponse(response);
+    } else if (response.msg_type === 'account_list') {
+        handleAccountListResponse(response);
+    } else if (response.msg_type === 'active_symbols') {
+        handleActiveSymbolsResponse(response);
+    }
 }
 
 // Check for OAuth token in URL
@@ -113,8 +130,12 @@ async function handleAuthentication() {
             return;
         }
         
-        await api.authorize(token);
-        await fetchAccounts();
+        // Send authorization request
+        api.send(JSON.stringify({
+            authorize: token
+        }));
+        
+        addToLog('Authenticating...', 'info');
         
     } catch (error) {
         console.error('Authentication failed:', error);
@@ -122,22 +143,32 @@ async function handleAuthentication() {
     }
 }
 
-// Fetch user accounts
-async function fetchAccounts() {
-    try {
-        const response = await api.accountList();
-        accounts = response.account_list;
-        
-        if (accounts.length > 0) {
-            populateAccountDropdown();
-            elements.authenticateBtn.textContent = 'Authenticated';
-            elements.authenticateBtn.style.backgroundColor = 'var(--success-color)';
-        } else {
-            addToLog('No trading accounts found.', 'warning');
-        }
-    } catch (error) {
-        console.error('Failed to fetch accounts:', error);
-        addToLog('Failed to load accounts. Please try again.', 'error');
+// Handle authorization response
+function handleAuthorizationResponse(response) {
+    if (response.error) {
+        addToLog('Authorization failed: ' + response.error.message, 'error');
+        return;
+    }
+    
+    addToLog('Successfully authenticated', 'success');
+    elements.authenticateBtn.textContent = 'Authenticated';
+    elements.authenticateBtn.style.backgroundColor = 'var(--success-color)';
+    
+    // Request account list
+    api.send(JSON.stringify({
+        account_list: 1
+    }));
+}
+
+// Handle account list response
+function handleAccountListResponse(response) {
+    accounts = response.account_list;
+    
+    if (accounts.length > 0) {
+        populateAccountDropdown();
+        addToLog(`${accounts.length} accounts loaded`, 'success');
+    } else {
+        addToLog('No trading accounts found.', 'warning');
     }
 }
 
@@ -152,7 +183,7 @@ function populateAccountDropdown() {
     
     accounts.forEach(account => {
         const option = document.createElement('option');
-        option.value = account.account;
+        option.value = account.loginid;
         option.textContent = `${account.account_type} (${account.currency})`;
         elements.accountList.appendChild(option);
     });
@@ -161,13 +192,13 @@ function populateAccountDropdown() {
 }
 
 // Handle account selection
-async function handleAccountSelection(event) {
+function handleAccountSelection(event) {
     const accountId = event.target.value;
-    currentAccount = accounts.find(acc => acc.account === accountId);
+    currentAccount = accounts.find(acc => acc.loginid === accountId);
     
     if (currentAccount) {
         elements.accountBalance.textContent = `${currentAccount.balance} ${currentAccount.currency}`;
-        await fetchInstruments();
+        fetchInstruments();
     } else {
         elements.instrumentList.disabled = true;
         elements.analyzeBtn.disabled = true;
@@ -175,15 +206,22 @@ async function handleAccountSelection(event) {
 }
 
 // Fetch available instruments
-async function fetchInstruments() {
-    try {
-        const response = await api.activeSymbols({ active_symbols: 'brief' });
-        instruments = response.active_symbols.filter(sym => sym.market === 'forex' || sym.market === 'synthetic');
-        populateInstrumentDropdown();
-    } catch (error) {
-        console.error('Failed to fetch instruments:', error);
-        addToLog('Failed to load instruments. Please try again.', 'error');
-    }
+function fetchInstruments() {
+    api.send(JSON.stringify({
+        active_symbols: 'brief',
+        product_type: 'basic'
+    }));
+    addToLog('Loading instruments...', 'info');
+}
+
+// Handle active symbols response
+function handleActiveSymbolsResponse(response) {
+    instruments = response.active_symbols.filter(sym => 
+        sym.market === 'forex' || sym.market === 'synthetic'
+    );
+    
+    populateInstrumentDropdown();
+    addToLog(`${instruments.length} instruments loaded`, 'success');
 }
 
 // Populate instrument dropdown
@@ -256,303 +294,19 @@ function initializeChart() {
     fetchHistoricalData('1m');
 }
 
-// Change timeframe
-function changeTimeframe(timeframe) {
+// Fetch historical data
+function fetchHistoricalData(timeframe) {
     if (!currentInstrument) return;
     
-    // Update active button
-    document.querySelectorAll('.chart-button').forEach(btn => {
-        btn.classList.remove('active');
-    });
-    event.target.classList.add('active');
+    api.send(JSON.stringify({
+        ticks_history: currentInstrument,
+        style: 'candles',
+        granularity: timeframe === '1m' ? 60 : timeframe === '5m' ? 300 : timeframe === '15m' ? 900 : 3600,
+        count: 1000,
+        end: 'latest'
+    }));
     
-    fetchHistoricalData(timeframe);
-}
-
-// Fetch historical data
-async function fetchHistoricalData(timeframe) {
-    try {
-        const response = await api.candles({
-            symbol: currentInstrument,
-            granularity: timeframe,
-            count: 1000
-        });
-        
-        historicalData = response.candles.map(candle => ({
-            time: candle.epoch,
-            open: candle.open,
-            high: candle.high,
-            low: candle.low,
-            close: candle.close
-        }));
-        
-        currentSeries.setData(historicalData);
-        subscribeToTicks();
-        
-    } catch (error) {
-        console.error('Failed to fetch historical data:', error);
-        addToLog(`Failed to load ${timeframe} data for ${currentInstrument}`, 'error');
-    }
-}
-
-// Subscribe to real-time ticks
-function subscribeToTicks() {
-    // Unsubscribe from any existing subscriptions
-    activeSubscriptions.forEach(sub => sub.unsubscribe());
-    activeSubscriptions.clear();
-    
-    const tickSubscription = api.subscribe({ ticks: currentInstrument });
-    
-    tickSubscription.onUpdate(response => {
-        const tick = response.tick;
-        tickData.push(tick);
-        
-        if (tickData.length > MAX_TICKS) {
-            tickData.shift();
-        }
-        
-        updateChart(tick);
-    });
-    
-    activeSubscriptions.add(tickSubscription);
-}
-
-// Update chart with new tick
-function updateChart(tick) {
-    const lastCandle = historicalData[historicalData.length - 1];
-    const currentTime = Math.floor(tick.epoch / 60000) * 60000; // Round to nearest minute
-    
-    if (lastCandle.time === currentTime) {
-        // Update current candle
-        lastCandle.high = Math.max(lastCandle.high, tick.quote);
-        lastCandle.low = Math.min(lastCandle.low, tick.quote);
-        lastCandle.close = tick.quote;
-    } else {
-        // Create new candle
-        const newCandle = {
-            time: currentTime,
-            open: tick.quote,
-            high: tick.quote,
-            low: tick.quote,
-            close: tick.quote
-        };
-        historicalData.push(newCandle);
-        
-        if (historicalData.length > 1000) {
-            historicalData.shift();
-        }
-    }
-    
-    currentSeries.update(historicalData[historicalData.length - 1]);
-}
-
-// Start analysis
-function startAnalysis() {
-    if (!currentInstrument || !currentAccount) return;
-    
-    elements.analyzeBtn.disabled = true;
-    elements.analyzeBtn.textContent = 'Analyzing...';
-    
-    // Clear previous results
-    elements.strategyStatus.innerHTML = '';
-    elements.currentSignal.innerHTML = '<p style="color: var(--text-secondary); font-size: 0.9rem;">Analyzing...</p>';
-    
-    // Simulate analysis (in a real app, this would run actual strategies)
-    setTimeout(() => {
-        runStrategies();
-        elements.analyzeBtn.disabled = false;
-        elements.analyzeBtn.textContent = 'Analyze';
-    }, 2000);
-}
-
-// Run all strategies
-function runStrategies() {
-    const data = {
-        historical: historicalData,
-        realtime: tickData
-    };
-    
-    let totalBullish = 0;
-    let totalBearish = 0;
-    let totalConfidence = 0;
-    let strategyCount = 0;
-    
-    // Run price action strategy as an example
-    const priceActionResult = priceActionStrategy(data);
-    addStrategyResult('Price Action', priceActionResult);
-    
-    if (priceActionResult.direction === 'bullish') totalBullish++;
-    if (priceActionResult.direction === 'bearish') totalBearish++;
-    totalConfidence += priceActionResult.confidence;
-    strategyCount++;
-    
-    // Determine final signal
-    const finalDirection = totalBullish > totalBearish ? 'bullish' : totalBearish > totalBullish ? 'bearish' : 'neutral';
-    const avgConfidence = Math.round(totalConfidence / strategyCount);
-    
-    displayFinalSignal(finalDirection, avgConfidence);
-}
-
-// Example strategy implementation
-function priceActionStrategy(data) {
-    if (data.historical.length < 3) {
-        return { confidence: 0, direction: 'neutral', reason: 'Not enough data' };
-    }
-    
-    const recentCandles = data.historical.slice(-3);
-    const currentPrice = data.realtime.length > 0 ? data.realtime[data.realtime.length - 1].quote : recentCandles[2].close;
-    
-    // Check for bullish engulfing pattern
-    if (recentCandles[1].close < recentCandles[1].open && // Previous candle was bearish
-        recentCandles[2].close > recentCandles[2].open && // Current candle is bullish
-        recentCandles[2].open < recentCandles[1].close && 
-        recentCandles[2].close > recentCandles[1].open) {
-        return { confidence: 75, direction: 'bullish', reason: 'Bullish engulfing pattern detected' };
-    }
-    
-    // Check for bearish engulfing pattern
-    if (recentCandles[1].close > recentCandles[1].open && // Previous candle was bullish
-        recentCandles[2].close < recentCandles[2].open && // Current candle is bearish
-        recentCandles[2].open > recentCandles[1].close && 
-        recentCandles[2].close < recentCandles[1].open) {
-        return { confidence: 75, direction: 'bearish', reason: 'Bearish engulfing pattern detected' };
-    }
-    
-    // Default neutral signal
-    return { confidence: 0, direction: 'neutral', reason: 'No clear price action pattern' };
-}
-
-// Add strategy result to UI
-function addStrategyResult(strategyName, result) {
-    const strategyElement = document.createElement('div');
-    strategyElement.className = `strategy-status ${result.direction}`;
-    
-    strategyElement.innerHTML = `
-        <div class="strategy-name">
-            <span>${strategyName}</span>
-            <span class="direction ${result.direction}">${result.direction}</span>
-        </div>
-        <div class="strategy-description">${result.reason}</div>
-        <div class="confidence">Confidence: ${result.confidence}%</div>
-        <div class="strategy-progress">
-            <div class="progress-bar" style="width: ${result.confidence}%"></div>
-        </div>
-    `;
-    
-    elements.strategyStatus.appendChild(strategyElement);
-}
-
-// Display final signal
-function displayFinalSignal(direction, confidence) {
-    elements.confidenceFill.style.width = `${confidence}%`;
-    elements.confidenceValue.textContent = `${confidence}%`;
-    
-    let signalHTML = '';
-    if (direction === 'neutral') {
-        signalHTML = '<p style="color: var(--text-secondary);">No clear market direction</p>';
-    } else {
-        signalHTML = `
-            <h3 style="color: ${direction === 'bullish' ? 'var(--success-color)' : 'var(--error-color)'}">
-                ${direction.toUpperCase()} SIGNAL
-            </h3>
-            <p>${confidence}% confidence</p>
-        `;
-    }
-    
-    elements.currentSignal.innerHTML = signalHTML;
-    addToLog(`New ${direction} signal detected with ${confidence}% confidence`, 'info');
-}
-
-// Execute current signal
-function executeCurrentSignal() {
-    const signalElement = elements.currentSignal.querySelector('h3');
-    if (!signalElement) return;
-    
-    const direction = signalElement.textContent.includes('BULLISH') ? 'BUY' : 'SELL';
-    executeTrade(direction);
-}
-
-// Ignore current signal
-function ignoreCurrentSignal() {
-    addToLog('Current signal ignored', 'warning');
-    elements.currentSignal.innerHTML = '<p style="color: var(--text-secondary); font-size: 0.9rem;">Waiting for new analysis...</p>';
-    elements.confidenceFill.style.width = '0%';
-    elements.confidenceValue.textContent = '0%';
-}
-
-// Execute trade
-async function executeTrade(direction) {
-    const now = Date.now();
-    if (now - lastSignalTime < 30000) { // 30-second cooldown
-        addToLog('Trade execution too frequent. Please wait.', 'warning');
-        return;
-    }
-    lastSignalTime = now;
-    
-    try {
-        const amount = 10; // Fixed amount for demo
-        const response = await api.buy({
-            price: amount,
-            amount: amount,
-            basis: 'stake',
-            contract_type: direction.toLowerCase(),
-            currency: currentAccount.currency,
-            duration: PREDICTION_WINDOW,
-            duration_unit: 'm',
-            symbol: currentInstrument
-        });
-        
-        const trade = {
-            id: response.buy.contract_id,
-            direction,
-            amount,
-            timestamp: new Date(),
-            instrument: currentInstrument,
-            profit: response.buy.profit > 0
-        };
-        
-        tradeHistory.push(trade);
-        logTrade(trade);
-        updatePerformanceMetrics();
-        
-    } catch (error) {
-        console.error('Trade execution failed:', error);
-        addToLog('Trade execution failed: ' + error.message, 'error');
-    }
-}
-
-// Log trade to UI
-function logTrade(trade) {
-    const logEntry = document.createElement('div');
-    logEntry.className = `log-entry ${trade.direction.toLowerCase()} ${trade.profit ? 'profit' : 'loss'}`;
-    
-    logEntry.innerHTML = `
-        <div class="log-time">${trade.timestamp.toLocaleTimeString()}</div>
-        <div class="log-message">
-            Executed ${trade.direction} trade for ${trade.amount} ${currentAccount.currency} on ${trade.instrument}
-            - ${trade.profit ? 'WIN' : 'LOSS'}
-        </div>
-    `;
-    
-    elements.analysisLog.prepend(logEntry);
-    addToLog(`Trade executed: ${trade.direction} ${trade.instrument}`, 'trade');
-}
-
-// Update performance metrics
-function updatePerformanceMetrics() {
-    if (tradeHistory.length === 0) return;
-    
-    const wins = tradeHistory.filter(t => t.profit).length;
-    const losses = tradeHistory.length - wins;
-    const winRate = Math.round((wins / tradeHistory.length) * 100);
-    
-    const totalProfit = tradeHistory.reduce((sum, trade) => sum + (trade.profit ? trade.amount : -trade.amount), 0);
-    const profitFactor = wins > 0 ? (wins * 10) / (losses * 10) : 0;
-    
-    elements.winRate.textContent = `${winRate}%`;
-    elements.pnl.textContent = `$${totalProfit.toFixed(2)}`;
-    elements.totalTrades.textContent = tradeHistory.length;
-    elements.profitFactor.textContent = profitFactor.toFixed(2);
+    addToLog(`Loading ${timeframe} data for ${currentInstrument}...`, 'info');
 }
 
 // Add message to log
