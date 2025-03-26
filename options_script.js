@@ -1,932 +1,1451 @@
-// Deriv Trading Bot - Options Trading Module
-// Version 1.1 - Fixed and Enhanced
+// options_script.js - Complete Implementation
+const DerivAPIBrowser = require('@deriv/deriv-api/dist/DerivAPIBrowser');
+const { LightweightCharts } = require('lightweight-charts');
+const talib = require('talib'); // For technical indicators
 
-// Configuration
-const CONFIG = {
-    RISK_PER_TRADE: 0.02, // 2% of balance
-    MAX_MARTINGALE: 5, // Max consecutive losses before stopping
-    SESSION_PROFIT_TARGET: 0.1, // 10% account growth target
-    ANALYSIS_INTERVAL: 5000, // 5 seconds between analysis
-    HISTORY_LENGTH: 1000 // Number of ticks to keep in memory
-};
-
-// Trading Strategies with weights and descriptions
-const STRATEGIES = {
-    EMA_CROSSOVER: {
-        name: 'EMA Crossover',
-        weight: 0.25,
-        description: '9/21 EMA crossover strategy for trend identification',
-        currentSignal: null,
-        analysis: async (ticks) => {
-            const shortEMA = calculateEMA(ticks, 9);
-            const longEMA = calculateEMA(ticks, 21);
-            return {
-                signal: shortEMA > longEMA ? 'CALL' : 'PUT',
-                confidence: Math.abs(shortEMA - longEMA) / ticks[ticks.length-1].close,
-                reasoning: `EMA Crossover: ${shortEMA > longEMA ? 'Bullish' : 'Bearish'} crossover detected (9EMA: ${shortEMA.toFixed(4)}, 21EMA: ${longEMA.toFixed(4)})`
-            };
-        }
-    },
-    RSI_STRAT: {
-        name: 'RSI Divergence',
-        weight: 0.2,
-        description: 'Relative Strength Index for overbought/oversold conditions',
-        currentSignal: null,
-        analysis: async (ticks) => {
-            const rsi = calculateRSI(ticks, 14);
-            let signal, reasoning;
-            if (rsi < 30) {
-                signal = 'CALL';
-                reasoning = `RSI (${rsi.toFixed(1)}) indicates oversold conditions`;
-            } else if (rsi > 70) {
-                signal = 'PUT';
-                reasoning = `RSI (${rsi.toFixed(1)}) indicates overbought conditions`;
-            } else {
-                signal = 'HOLD';
-                reasoning = `RSI (${rsi.toFixed(1)}) in neutral range`;
-            }
-            return {
-                signal,
-                confidence: rsi < 30 ? (30 - rsi)/30 : rsi > 70 ? (rsi - 70)/30 : 0,
-                reasoning
-            };
-        }
-    },
-    BOLLINGER_BANDS: {
-        name: 'Bollinger Bands',
-        weight: 0.2,
-        description: 'Price action relative to volatility bands',
-        currentSignal: null,
-        analysis: async (ticks) => {
-            const period = 20;
-            const stdDev = 2;
-            const closes = ticks.slice(-period).map(t => t.close);
-            const middle = calculateSMA(closes, period);
-            const std = calculateStandardDeviation(closes, middle);
-            const upper = middle + (std * stdDev);
-            const lower = middle - (std * stdDev);
-            const lastClose = ticks[ticks.length-1].close;
-            
-            let signal, reasoning;
-            if (lastClose <= lower) {
-                signal = 'CALL';
-                reasoning = `Price (${lastClose}) at lower Bollinger Band (${lower.toFixed(4)})`;
-            } else if (lastClose >= upper) {
-                signal = 'PUT';
-                reasoning = `Price (${lastClose}) at upper Bollinger Band (${upper.toFixed(4)})`;
-            } else {
-                signal = 'HOLD';
-                reasoning = `Price (${lastClose}) between bands (${lower.toFixed(4)}-${upper.toFixed(4)})`;
-            }
-            
-            return {
-                signal,
-                confidence: lastClose <= lower ? (lower - lastClose)/lower : 
-                           lastClose >= upper ? (lastClose - upper)/upper : 0,
-                reasoning
-            };
-        }
-    },
-    MACD: {
-        name: 'MACD',
-        weight: 0.15,
-        description: 'Moving Average Convergence Divergence momentum strategy',
-        currentSignal: null,
-        analysis: async (ticks) => {
-            const ema12 = calculateEMA(ticks, 12);
-            const ema26 = calculateEMA(ticks, 26);
-            const macdLine = ema12 - ema26;
-            const signalLine = calculateEMA(ticks.slice(-9), 9); // Using last 9 periods for signal
-            
-            return {
-                signal: macdLine > signalLine ? 'CALL' : 'PUT',
-                confidence: Math.abs(macdLine - signalLine) / ticks[ticks.length-1].close,
-                reasoning: `MACD (${macdLine.toFixed(4)}) ${macdLine > signalLine ? 'above' : 'below'} Signal Line (${signalLine.toFixed(4)})`
-            };
-        }
-    },
-    FIBONACCI_RETRACE: {
-        name: 'Fibonacci Retrace',
-        weight: 0.1,
-        description: 'Key Fibonacci levels for support/resistance',
-        currentSignal: null,
-        analysis: async (ticks) => {
-            const lookback = 50;
-            const recent = ticks.slice(-lookback);
-            const high = Math.max(...recent.map(t => t.high));
-            const low = Math.min(...recent.map(t => t.low));
-            const range = high - low;
-            const levels = {
-                '0.236': high - range * 0.236,
-                '0.382': high - range * 0.382,
-                '0.5': high - range * 0.5,
-                '0.618': high - range * 0.618
-            };
-            
-            const lastPrice = ticks[ticks.length-1].close;
-            let nearestLevel = null;
-            let minDistance = Infinity;
-            
-            for (const [key, value] of Object.entries(levels)) {
-                const distance = Math.abs(lastPrice - value);
-                if (distance < minDistance) {
-                    minDistance = distance;
-                    nearestLevel = {key, value};
-                }
-            }
-            
-            const threshold = range * 0.02; // 2% of range as threshold
-            let signal = 'HOLD';
-            let reasoning = `Price (${lastPrice}) near Fib ${nearestLevel.key} level (${nearestLevel.value.toFixed(4)})`;
-            
-            if (minDistance < threshold) {
-                const retraceLevel = parseFloat(nearestLevel.key);
-                if (retraceLevel <= 0.382 && lastPrice < nearestLevel.value) {
-                    signal = 'CALL';
-                    reasoning += ' - Potential support bounce';
-                } else if (retraceLevel >= 0.5 && lastPrice > nearestLevel.value) {
-                    signal = 'PUT';
-                    reasoning += ' - Potential resistance rejection';
-                }
-            }
-            
-            return {
-                signal,
-                confidence: signal !== 'HOLD' ? (threshold - minDistance)/threshold : 0,
-                reasoning
-            };
-        }
-    },
-    VOLUME_PROFILE: {
-        name: 'Volume Profile',
-        weight: 0.1,
-        description: 'Analyzing volume at price levels',
-        currentSignal: null,
-        analysis: async (ticks) => {
-            // Simplified volume profile analysis
-            const volumeBins = {};
-            ticks.slice(-100).forEach(tick => {
-                const priceLevel = Math.round(tick.close * 100) / 100;
-                volumeBins[priceLevel] = (volumeBins[priceLevel] || 0) + 1;
-            });
-            
-            const sortedLevels = Object.entries(volumeBins).sort((a, b) => b[1] - a[1]);
-            const highVolumeLevel = parseFloat(sortedLevels[0][0]);
-            const lastPrice = ticks[ticks.length-1].close;
-            const distance = Math.abs(lastPrice - highVolumeLevel);
-            const threshold = 0.001; // 0.1% threshold
-            
-            let signal = 'HOLD';
-            let reasoning = `High volume at ${highVolumeLevel}, current price ${lastPrice}`;
-            
-            if (distance < threshold) {
-                signal = lastPrice > highVolumeLevel ? 'PUT' : 'CALL';
-                reasoning += ` - Price at key volume ${lastPrice > highVolumeLevel ? 'resistance' : 'support'} level`;
-            }
-            
-            return {
-                signal,
-                confidence: signal !== 'HOLD' ? (threshold - distance)/threshold : 0,
-                reasoning
-            };
-        }
-    }
-};
+const APP_ID = 69958;
+const API_ENDPOINT = 'frontend.binary.com';
+const MAX_TICKS = 10000;
+const PREDICTION_WINDOW = 5; // minutes
 
 // Global variables
-let derivWS = null;
-let tickHistory = [];
-let currentInstrument = 'R_100';
-let accountBalance = 1000;
-let tradingSession = {
-    startTime: null,
-    trades: [],
-    pnl: 0,
-    winRate: 0,
-    consecutiveLosses: 0,
-    status: 'active',
-    profitTarget: 0
+let api;
+let currentAccount = null;
+let currentInstrument = null;
+let currentChart = null;
+let currentSeries = null;
+let tickData = [];
+let historicalData = [];
+let activeSubscriptions = new Set();
+let tradeHistory = [];
+let strategyPerformance = {};
+let lastSignalTime = 0;
+
+// Initialize with default weights (these can be adjusted based on performance)
+const strategyWeights = {
+    priceAction: 1.2,
+    breakout: 1.1,
+    trendFollowing: 1.0,
+    meanReversion: 0.9,
+    momentum: 1.0,
+    supportResistance: 1.1,
+    supplyDemand: 1.0,
+    reversal: 1.3,
+    scalping: 0.8,
+    martingale: 0.7,
+    neuralNetwork: 1.4,
+    bigMoneyFlow: 1.2,
+    deltaGamma: 1.1,
+    patternRecognition: 1.3,
+    fibonacci: 1.0,
+    vwap: 1.1,
+    multiTimeframe: 1.2,
+    orderBook: 1.0,
+    historicalSuccess: 1.3,
+    selfLearning: 1.5
 };
 
-// Initialize charts
-let chart, candlestickSeries, volumeSeries;
+const indicatorWeights = {
+    rsi: 1.0,
+    macd: 1.1,
+    bollinger: 1.0,
+    ema: 1.2,
+    stochastic: 0.9,
+    parabolicSAR: 1.0,
+    atr: 0.8,
+    ichimoku: 1.1,
+    adx: 1.0,
+    volume: 0.9
+};
 
-function initializeCharts() {
-    chart = LightweightCharts.createChart(document.getElementById('chart'), {
-        width: 800,
-        height: 400,
-        layout: {
-            background: { color: 'rgba(255, 255, 255, 0.05)' },
-            textColor: 'white',
-        },
-        grid: {
-            vertLines: { color: 'rgba(255, 255, 255, 0.1)' },
-            horzLines: { color: 'rgba(255, 255, 255, 0.1)' },
-        },
-        timeScale: {
-            timeVisible: true,
-            secondsVisible: false,
-        }
-    });
-
-    candlestickSeries = chart.addCandlestickSeries({
-        upColor: '#00b4d8',
-        downColor: '#ff4d4d',
-        borderVisible: false,
-        wickUpColor: '#00b4d8',
-        wickDownColor: '#ff4d4d',
-    });
-
-    volumeSeries = chart.addHistogramSeries({
-        color: 'rgba(0, 180, 216, 0.3)',
-        priceFormat: {
-            type: 'volume',
-        },
-        priceScaleId: ''
-    });
-}
-
-// Trading Engine Class
-class TradingEngine {
-    constructor() {
-        this.activeStrategies = new Set(Object.keys(STRATEGIES));
-        this.marketConditions = {
-            volatility: 0,
-            trendStrength: 0,
-            marketPhase: 'neutral'
-        };
-    }
-
-    async analyzeMarket(ticks) {
-        if (ticks.length < 50) {
-            return { signal: 'HOLD', confidence: 0, details: [] };
-        }
-
-        // Calculate market conditions first
-        this.calculateMarketConditions(ticks);
+// Strategy Implementations
+const strategies = {
+    priceAction: (data) => {
+        const recentCandles = data.historical.slice(-3);
+        const currentPrice = data.realtime[data.realtime.length - 1].quote;
         
-        const analysisResults = [];
-        const strategyPromises = [];
+        // Check for common candlestick patterns
+        const isHammer = recentCandles[1].low < recentCandles[0].low && 
+                        recentCandles[1].close > (recentCandles[1].high + recentCandles[1].low)/2;
+        const isEngulfing = recentCandles[1].close > recentCandles[0].high && 
+                           recentCandles[1].open < recentCandles[0].low;
         
-        // Run all strategies in parallel
-        for (const [key, strategy] of Object.entries(STRATEGIES)) {
-            if (!this.activeStrategies.has(key)) continue;
-            
-            // Update strategy status UI
-            const strategyElement = document.getElementById(`strategy-${key}`);
-            if (strategyElement) {
-                strategyElement.classList.add('analyzing');
-                strategyElement.classList.remove('completed', 'error');
-                document.getElementById(`progress-${key}`).style.width = '50%';
+        let confidence = 0;
+        let direction = 'neutral';
+        let reason = '';
+        
+        if (isHammer && currentPrice > recentCandles[1].close) {
+            confidence = 65;
+            direction = 'bullish';
+            reason = 'Hammer pattern identified with confirmation';
+        } else if (isEngulfing) {
+            confidence = 70;
+            direction = recentCandles[1].close > recentCandles[1].open ? 'bullish' : 'bearish';
+            reason = 'Engulfing pattern identified';
+        }
+        
+        return { confidence, direction, reason };
+    },
+    
+    breakout: (data) => {
+        // Identify recent support/resistance levels
+        const recentData = data.historical.slice(-50);
+        const resistance = Math.max(...recentData.map(d => d.high));
+        const support = Math.min(...recentData.map(d => d.low));
+        const currentPrice = data.realtime[data.realtime.length - 1].quote;
+        const threshold = (resistance - support) * 0.05; // 5% of range
+        
+        let confidence = 0;
+        let direction = 'neutral';
+        let reason = '';
+        
+        if (currentPrice > resistance + threshold) {
+            confidence = 75;
+            direction = 'bullish';
+            reason = `Breakout above resistance (${resistance.toFixed(2)})`;
+        } else if (currentPrice < support - threshold) {
+            confidence = 75;
+            direction = 'bearish';
+            reason = `Breakdown below support (${support.toFixed(2)})`;
+        }
+        
+        return { confidence, direction, reason };
+    },
+    
+    trendFollowing: (data) => {
+        const closes = data.historical.slice(-200).map(d => d.close);
+        const ma50 = talib.MA(closes, 50);
+        const ma200 = talib.MA(closes, 200);
+        
+        const currentMA50 = ma50[ma50.length - 1];
+        const currentMA200 = ma200[ma200.length - 1];
+        const prevMA50 = ma50[ma50.length - 2];
+        const prevMA200 = ma200[ma200.length - 2];
+        
+        let confidence = 0;
+        let direction = 'neutral';
+        let reason = '';
+        
+        if (currentMA50 > currentMA200 && prevMA50 <= prevMA200) {
+            confidence = 80;
+            direction = 'bullish';
+            reason = 'Golden Cross (50MA crossed above 200MA)';
+        } else if (currentMA50 < currentMA200 && prevMA50 >= prevMA200) {
+            confidence = 80;
+            direction = 'bearish';
+            reason = 'Death Cross (50MA crossed below 200MA)';
+        } else if (currentMA50 > currentMA200) {
+            confidence = 60;
+            direction = 'bullish';
+            reason = 'Uptrend confirmed by moving averages';
+        } else if (currentMA50 < currentMA200) {
+            confidence = 60;
+            direction = 'bearish';
+            reason = 'Downtrend confirmed by moving averages';
+        }
+        
+        return { confidence, direction, reason };
+    },
+    
+    meanReversion: (data) => {
+        const closes = data.historical.slice(-100).map(d => d.close);
+        const mean = closes.reduce((a, b) => a + b, 0) / closes.length;
+        const stdDev = Math.sqrt(closes.reduce((sq, n) => sq + Math.pow(n - mean, 2), 0) / closes.length);
+        const currentPrice = data.realtime[data.realtime.length - 1].quote;
+        
+        let confidence = 0;
+        let direction = 'neutral';
+        let reason = '';
+        
+        if (currentPrice > mean + (2 * stdDev)) {
+            confidence = 70;
+            direction = 'bearish';
+            reason = 'Price significantly above mean (+2σ)';
+        } else if (currentPrice < mean - (2 * stdDev)) {
+            confidence = 70;
+            direction = 'bullish';
+            reason = 'Price significantly below mean (-2σ)';
+        } else if (currentPrice > mean + stdDev) {
+            confidence = 55;
+            direction = 'bearish';
+            reason = 'Price above mean (+1σ)';
+        } else if (currentPrice < mean - stdDev) {
+            confidence = 55;
+            direction = 'bullish';
+            reason = 'Price below mean (-1σ)';
+        }
+        
+        return { confidence, direction, reason };
+    },
+    
+    momentum: (data) => {
+        const closes = data.historical.slice(-14).map(d => d.close);
+        const rsi = talib.RSI(closes, 14);
+        const currentRSI = rsi[rsi.length - 1];
+        
+        let confidence = 0;
+        let direction = 'neutral';
+        let reason = '';
+        
+        if (currentRSI < 30) {
+            confidence = 65;
+            direction = 'bullish';
+            reason = 'Oversold condition (RSI < 30)';
+        } else if (currentRSI > 70) {
+            confidence = 65;
+            direction = 'bearish';
+            reason = 'Overbought condition (RSI > 70)';
+        } else if (currentRSI > 50 && currentRSI > rsi[rsi.length - 2]) {
+            confidence = 55;
+            direction = 'bullish';
+            reason = 'RSI rising above 50';
+        } else if (currentRSI < 50 && currentRSI < rsi[rsi.length - 2]) {
+            confidence = 55;
+            direction = 'bearish';
+            reason = 'RSI falling below 50';
+        }
+        
+        return { confidence, direction, reason };
+    },
+    
+    supportResistance: (data) => {
+        // More sophisticated S/R detection
+        const recentData = data.historical.slice(-100);
+        const levels = findSupportResistanceLevels(recentData);
+        const currentPrice = data.realtime[data.realtime.length - 1].quote;
+        const threshold = (Math.max(...recentData.map(d => d.high)) - 
+                         Math.min(...recentData.map(d => d.low))) * 0.02;
+        
+        let confidence = 0;
+        let direction = 'neutral';
+        let reason = '';
+        
+        for (const level of levels) {
+            if (Math.abs(currentPrice - level.price) < threshold) {
+                if (level.type === 'support' && currentPrice > level.price) {
+                    confidence = 75;
+                    direction = 'bullish';
+                    reason = `Bounce off support at ${level.price.toFixed(2)}`;
+                    break;
+                } else if (level.type === 'resistance' && currentPrice < level.price) {
+                    confidence = 75;
+                    direction = 'bearish';
+                    reason = `Rejection at resistance ${level.price.toFixed(2)}`;
+                    break;
+                }
             }
-
-            strategyPromises.push(
-                strategy.analysis(ticks)
-                    .then(result => {
-                        STRATEGIES[key].currentSignal = result.signal;
-                        analysisResults.push({
-                            strategy: key,
-                            signal: result.signal,
-                            confidence: result.confidence * strategy.weight,
-                            reasoning: result.reasoning
-                        });
-                        
-                        // Update strategy status UI
-                        if (strategyElement) {
-                            strategyElement.classList.remove('analyzing');
-                            strategyElement.classList.add('completed');
-                            document.getElementById(`progress-${key}`).style.width = '100%';
-                        }
-                        
-                        updateAnalysisLog(`[${strategy.name}] ${result.reasoning}`);
-                        return analysisResults;
-                    })
-                    .catch(error => {
-                        console.error(`Strategy ${key} failed:`, error);
-                        
-                        // Update strategy status UI
-                        if (strategyElement) {
-                            strategyElement.classList.remove('analyzing');
-                            strategyElement.classList.add('error');
-                            document.getElementById(`progress-${key}`).style.width = '100%';
-                            document.getElementById(`progress-${key}`).style.background = 'var(--error-color)';
-                        }
-                        
-                        updateAnalysisLog(`[${strategy.name}] Analysis failed: ${error.message}`);
-                        return null;
-                    })
+        }
+        
+        return { confidence, direction, reason };
+    },
+    
+    supplyDemand: (data) => {
+        // Identify supply/demand zones based on price reactions
+        const recentData = data.historical.slice(-200);
+        const zones = identifySupplyDemandZones(recentData);
+        const currentPrice = data.realtime[data.realtime.length - 1].quote;
+        
+        let confidence = 0;
+        let direction = 'neutral';
+        let reason = '';
+        
+        for (const zone of zones) {
+            if (currentPrice >= zone.start && currentPrice <= zone.end) {
+                if (zone.type === 'demand') {
+                    confidence = 70;
+                    direction = 'bullish';
+                    reason = `Price in demand zone (${zone.start.toFixed(2)}-${zone.end.toFixed(2)})`;
+                } else {
+                    confidence = 70;
+                    direction = 'bearish';
+                    reason = `Price in supply zone (${zone.start.toFixed(2)}-${zone.end.toFixed(2)})`;
+                }
+                break;
+            }
+        }
+        
+        return { confidence, direction, reason };
+    },
+    
+    reversal: (data) => {
+        const recentCandles = data.historical.slice(-5);
+        const patterns = checkReversalPatterns(recentCandles);
+        
+        if (patterns.length > 0) {
+            const strongestPattern = patterns.reduce((prev, current) => 
+                (prev.confidence > current.confidence) ? prev : current
             );
+            
+            return {
+                confidence: strongestPattern.confidence,
+                direction: strongestPattern.direction,
+                reason: strongestPattern.name
+            };
         }
-
-        const results = await Promise.all(strategyPromises);
-        const validResults = results.flat().filter(r => r !== null);
-        return this.consolidateSignals(validResults);
-    }
-
-    calculateMarketConditions(ticks) {
-        // Calculate volatility (standard deviation of last 50 closes)
-        const recentCloses = ticks.slice(-50).map(t => t.close);
-        const mean = recentCloses.reduce((a, b) => a + b, 0) / recentCloses.length;
-        const variance = recentCloses.reduce((a, b) => a + Math.pow(b - mean, 2), 0) / recentCloses.length;
-        this.marketConditions.volatility = Math.sqrt(variance) / mean;
         
-        // Calculate trend strength (slope of linear regression)
-        const n = recentCloses.length;
-        const xSum = n * (n - 1) / 2;
-        const x2Sum = n * (n - 1) * (2 * n - 1) / 6;
-        const ySum = recentCloses.reduce((a, b) => a + b, 0);
-        const xySum = recentCloses.reduce((a, b, i) => a + b * i, 0);
+        return { confidence: 0, direction: 'neutral', reason: '' };
+    },
+    
+    scalping: (data) => {
+        // Focus on very short-term patterns (last 3-5 candles)
+        const recentCandles = data.historical.slice(-5);
+        const currentPrice = data.realtime[data.realtime.length - 1].quote;
         
-        const slope = (n * xySum - xSum * ySum) / (n * x2Sum - xSum * xSum);
-        this.marketConditions.trendStrength = Math.abs(slope) / mean;
-        this.marketConditions.marketPhase = slope > 0 ? 'bullish' : slope < 0 ? 'bearish' : 'neutral';
+        // Check for inside bar breakout
+        if (recentCandles.length >= 3) {
+            const motherBar = recentCandles[recentCandles.length - 3];
+            const insideBar = recentCandles[recentCandles.length - 2];
+            
+            if (insideBar.high < motherBar.high && insideBar.low > motherBar.low) {
+                if (currentPrice > motherBar.high) {
+                    return { confidence: 60, direction: 'bullish', reason: 'Inside bar breakout (bullish)' };
+                } else if (currentPrice < motherBar.low) {
+                    return { confidence: 60, direction: 'bearish', reason: 'Inside bar breakout (bearish)' };
+                }
+            }
+        }
         
-        updateAnalysisLog(`Market Conditions: Volatility ${(this.marketConditions.volatility*100).toFixed(2)}%, Trend ${this.marketConditions.marketPhase} (Strength: ${(this.marketConditions.trendStrength*100).toFixed(2)}%)`);
-    }
-
-    consolidateSignals(results) {
-        const signalWeights = { CALL: 0, PUT: 0, HOLD: 0 };
-        const signalReasons = {
-            CALL: [],
-            PUT: [],
-            HOLD: []
-        };
-        
-        results.forEach(({ signal, confidence, reasoning }) => {
-            signalWeights[signal] += confidence;
-            signalReasons[signal].push(reasoning);
-        });
-
-        const maxSignal = Object.entries(signalWeights).reduce((a, b) => 
-            a[1] > b[1] ? a : b);
-        
-        // Adjust confidence based on market conditions
-        let adjustedConfidence = maxSignal[1];
-        if (maxSignal[0] !== 'HOLD') {
-            // Increase confidence if signal aligns with trend
-            if ((maxSignal[0] === 'CALL' && this.marketConditions.marketPhase === 'bullish') ||
-                (maxSignal[0] === 'PUT' && this.marketConditions.marketPhase === 'bearish')) {
-                adjustedConfidence = Math.min(1, adjustedConfidence * 1.2);
+        // Check for micro double top/bottom
+        if (recentCandles.length >= 5) {
+            const top1 = recentCandles[recentCandles.length - 5].high;
+            const top2 = recentCandles[recentCandles.length - 3].high;
+            const bottom1 = recentCandles[recentCandles.length - 5].low;
+            const bottom2 = recentCandles[recentCandles.length - 3].low;
+            
+            if (Math.abs(top1 - top2) / top1 < 0.005 && currentPrice < recentCandles[recentCandles.length - 2].low) {
+                return { confidence: 65, direction: 'bearish', reason: 'Micro double top pattern' };
             }
             
-            // Increase confidence in high volatility
-            adjustedConfidence = Math.min(1, adjustedConfidence * (1 + this.marketConditions.volatility));
+            if (Math.abs(bottom1 - bottom2) / bottom1 < 0.005 && currentPrice > recentCandles[recentCandles.length - 2].high) {
+                return { confidence: 65, direction: 'bullish', reason: 'Micro double bottom pattern' };
+            }
         }
         
-        return {
-            signal: maxSignal[0],
-            confidence: adjustedConfidence,
-            reasons: signalReasons[maxSignal[0]],
-            details: results
+        return { confidence: 0, direction: 'neutral', reason: '' };
+    },
+    
+    martingale: (data) => {
+        // Adjust strategy based on recent win/loss streak
+        if (tradeHistory.length < 3) return { confidence: 0, direction: 'neutral', reason: '' };
+        
+        const lastTrades = tradeHistory.slice(-3);
+        const losingStreak = lastTrades.filter(t => !t.profit).length;
+        
+        if (losingStreak >= 2) {
+            const lastSignal = lastTrades[lastTrades.length - 1];
+            return {
+                confidence: 55,
+                direction: lastSignal.direction === 'BUY' ? 'SELL' : 'BUY',
+                reason: `Martingale adjustment after ${losingStreak} losses`
+            };
+        }
+        
+        return { confidence: 0, direction: 'neutral', reason: '' };
+    },
+    
+    neuralNetwork: (data) => {
+        // Simplified neural network approach (in a real app, this would use a trained model)
+        const features = extractFeatures(data);
+        
+        // Mock prediction based on feature weights
+        const bullishScore = features.reduce((sum, f) => sum + (f.bullishWeight * f.value), 0);
+        const bearishScore = features.reduce((sum, f) => sum + (f.bearishWeight * f.value), 0);
+        
+        if (bullishScore > bearishScore + 0.2) {
+            return { confidence: Math.min(80, bullishScore * 10), direction: 'bullish', reason: 'Neural net bullish bias' };
+        } else if (bearishScore > bullishScore + 0.2) {
+            return { confidence: Math.min(80, bearishScore * 10), direction: 'bearish', reason: 'Neural net bearish bias' };
+        }
+        
+        return { confidence: 0, direction: 'neutral', reason: '' };
+    },
+    
+    bigMoneyFlow: (data) => {
+        // Analyze tick data for large transactions
+        const largeTicks = data.realtime.filter(t => t.size > 100); // Assuming size indicates volume
+        
+        if (largeTicks.length === 0) return { confidence: 0, direction: 'neutral', reason: '' };
+        
+        const buyVolume = largeTicks.filter(t => t.tickDirection === 'PlusTick').reduce((sum, t) => sum + t.size, 0);
+        const sellVolume = largeTicks.filter(t => t.tickDirection === 'MinusTick').reduce((sum, t) => sum + t.size, 0);
+        
+        const ratio = buyVolume / (buyVolume + sellVolume);
+        
+        if (ratio > 0.7) {
+            return { confidence: 70, direction: 'bullish', reason: 'Large buy volume detected' };
+        } else if (ratio < 0.3) {
+            return { confidence: 70, direction: 'bearish', reason: 'Large sell volume detected' };
+        }
+        
+        return { confidence: 0, direction: 'neutral', reason: '' };
+    },
+    
+    deltaGamma: (data) => {
+        // Simplified delta/gamma analysis (in a real app, this would use options data)
+        const recentTicks = data.realtime.slice(-100);
+        const upTicks = recentTicks.filter(t => t.tickDirection === 'PlusTick').length;
+        const downTicks = recentTicks.filter(t => t.tickDirection === 'MinusTick').length;
+        
+        const delta = (upTicks - downTicks) / recentTicks.length;
+        const gamma = Math.abs(delta - ((upTicks - downTicks) / recentTicks.length));
+        
+        if (delta > 0.2 && gamma < 0.1) {
+            return { confidence: 65, direction: 'bullish', reason: 'Positive delta with low gamma' };
+        } else if (delta < -0.2 && gamma < 0.1) {
+            return { confidence: 65, direction: 'bearish', reason: 'Negative delta with low gamma' };
+        } else if (gamma > 0.3) {
+            return { confidence: 60, direction: delta > 0 ? 'bullish' : 'bearish', reason: 'High gamma suggests continuation' };
+        }
+        
+        return { confidence: 0, direction: 'neutral', reason: '' };
+    },
+    
+    patternRecognition: (data) => {
+        const recentData = data.historical.slice(-50);
+        const patterns = detectChartPatterns(recentData);
+        
+        if (patterns.length > 0) {
+            const strongestPattern = patterns.reduce((prev, current) => 
+                (prev.confidence > current.confidence) ? prev : current
+            );
+            
+            return {
+                confidence: strongestPattern.confidence,
+                direction: strongestPattern.direction,
+                reason: strongestPattern.name
+            };
+        }
+        
+        return { confidence: 0, direction: 'neutral', reason: '' };
+    },
+    
+    fibonacci: (data) => {
+        const recentData = data.historical.slice(-100);
+        const swingHigh = Math.max(...recentData.map(d => d.high));
+        const swingLow = Math.min(...recentData.map(d => d.low));
+        const range = swingHigh - swingLow;
+        
+        const levels = {
+            '0.236': swingHigh - range * 0.236,
+            '0.382': swingHigh - range * 0.382,
+            '0.5': swingHigh - range * 0.5,
+            '0.618': swingHigh - range * 0.618,
+            '0.786': swingHigh - range * 0.786
         };
-    }
-
-    calculateDynamicStake(balance) {
-        if (tradingSession.consecutiveLosses >= CONFIG.MAX_MARTINGALE) {
-            updateAnalysisLog("Max martingale reached! Stopping trading session.");
-            tradingSession.status = 'stopped';
-            return 0;
+        
+        const currentPrice = data.realtime[data.realtime.length - 1].quote;
+        const threshold = range * 0.02;
+        
+        for (const [level, price] of Object.entries(levels)) {
+            if (Math.abs(currentPrice - price) < threshold) {
+                // Check for bounce or break
+                const prevPrice = data.realtime[data.realtime.length - 2].quote;
+                
+                if (currentPrice > price && prevPrice <= price) {
+                    return { 
+                        confidence: 70, 
+                        direction: 'bullish', 
+                        reason: `Bounce off Fibonacci ${level} level (${price.toFixed(2)})` 
+                    };
+                } else if (currentPrice < price && prevPrice >= price) {
+                    return { 
+                        confidence: 70, 
+                        direction: 'bearish', 
+                        reason: `Rejection at Fibonacci ${level} level (${price.toFixed(2)})` 
+                    };
+                }
+            }
         }
         
-        const baseStake = balance * CONFIG.RISK_PER_TRADE;
-        const martingaleFactor = Math.pow(2, tradingSession.consecutiveLosses);
-        return Math.min(baseStake * martingaleFactor, balance * 0.5); // Never risk more than 50%
-    }
-
-    shouldContinueTrading() {
-        if (tradingSession.status === 'stopped') return false;
+        return { confidence: 0, direction: 'neutral', reason: '' };
+    },
+    
+    vwap: (data) => {
+        const recentData = data.historical.slice(-100);
+        const vwap = calculateVWAP(recentData);
+        const currentPrice = data.realtime[data.realtime.length - 1].quote;
         
-        // Check profit target
-        if (tradingSession.pnl >= tradingSession.profitTarget) {
-            updateAnalysisLog(`Profit target reached! Current PNL: $${tradingSession.pnl.toFixed(2)}`);
-            tradingSession.status = 'target_reached';
-            return false;
+        if (currentPrice > vwap && data.realtime[data.realtime.length - 2].quote <= vwap) {
+            return { confidence: 65, direction: 'bullish', reason: 'Price crossed above VWAP' };
+        } else if (currentPrice < vwap && data.realtime[data.realtime.length - 2].quote >= vwap) {
+            return { confidence: 65, direction: 'bearish', reason: 'Price crossed below VWAP' };
+        } else if (currentPrice > vwap) {
+            return { confidence: 55, direction: 'bullish', reason: 'Price above VWAP' };
+        } else if (currentPrice < vwap) {
+            return { confidence: 55, direction: 'bearish', reason: 'Price below VWAP' };
         }
         
-        // Check if market conditions are too volatile
-        if (this.marketConditions.volatility > 0.05) { // 5% volatility
-            updateAnalysisLog(`High volatility detected (${(this.marketConditions.volatility*100).toFixed(2)}%). Pausing trading.`);
-            return false;
+        return { confidence: 0, direction: 'neutral', reason: '' };
+    },
+    
+    multiTimeframe: (data) => {
+        // Analyze higher timeframe trends (simplified)
+        const dailyData = data.historical.filter((_, i) => i % 1440 === 0); // Approximate daily
+        const weeklyData = data.historical.filter((_, i) => i % (1440 * 5) === 0); // Approximate weekly
+        
+        if (dailyData.length < 20 || weeklyData.length < 10) {
+            return { confidence: 0, direction: 'neutral', reason: '' };
         }
         
-        return true;
-    }
-}
-
-// Technical Indicators
-function calculateEMA(ticks, period) {
-    const multiplier = 2 / (period + 1);
-    let ema = ticks[0].close;
-    for (let i = 1; i < ticks.length; i++) {
-        ema = (ticks[i].close - ema) * multiplier + ema;
-    }
-    return ema;
-}
-
-function calculateRSI(ticks, period) {
-    let gains = 0;
-    let losses = 0;
-    
-    for (let i = 1; i <= period; i++) {
-        const delta = ticks[i].close - ticks[i-1].close;
-        if (delta > 0) gains += delta;
-        else losses -= delta;
-    }
-    
-    const avgGain = gains / period;
-    const avgLoss = losses / period;
-    const rs = avgLoss === 0 ? 100 : avgGain / avgLoss;
-    return 100 - (100 / (1 + rs));
-}
-
-function calculateSMA(data, period) {
-    const sum = data.slice(-period).reduce((a, b) => a + b, 0);
-    return sum / period;
-}
-
-function calculateStandardDeviation(data, mean) {
-    const squaredDiffs = data.map(value => Math.pow(value - mean, 2));
-    const variance = squaredDiffs.reduce((a, b) => a + b, 0) / squaredDiffs.length;
-    return Math.sqrt(variance);
-}
-
-// WebSocket Functions
-function connectToDeriv() {
-    derivWS = new WebSocket('wss://ws.binaryws.com/websockets/v3?app_id=69958');
-    
-    derivWS.onopen = () => {
-        console.log('Connected to Deriv');
-        const token = getOAuthToken();
-        if (token) {
-            authenticate(token);
-        } else {
-            updateAnalysisLog('Error: No authentication token found');
-            window.location.href = 'index.html';
+        const dailyTrend = talib.MA(dailyData.slice(-20).map(d => d.close), 20);
+        const weeklyTrend = talib.MA(weeklyData.slice(-10).map(d => d.close), 10);
+        
+        const dailyDirection = dailyTrend[dailyTrend.length - 1] > dailyTrend[dailyTrend.length - 2] ? 'bullish' : 'bearish';
+        const weeklyDirection = weeklyTrend[weeklyTrend.length - 1] > weeklyTrend[weeklyTrend.length - 2] ? 'bullish' : 'bearish';
+        
+        if (dailyDirection === weeklyDirection) {
+            return { 
+                confidence: 75, 
+                direction: dailyDirection, 
+                reason: `Multi-timeframe alignment (${dailyDirection} daily & weekly)` 
+            };
         }
-    };
-
-    derivWS.onmessage = (msg) => {
-        try {
-            const data = JSON.parse(msg.data);
-            handleWebSocketMessage(data);
-        } catch (error) {
-            console.error('Error parsing WebSocket message:', error);
-            updateAnalysisLog('Error processing market data');
+        
+        return { confidence: 0, direction: 'neutral', reason: '' };
+    },
+    
+    orderBook: (data) => {
+        // Simulated order book analysis (real implementation would use actual order book data)
+        const recentTicks = data.realtime.slice(-100);
+        const bidVolume = recentTicks.filter(t => t.tickDirection === 'PlusTick').length;
+        const askVolume = recentTicks.filter(t => t.tickDirection === 'MinusTick').length;
+        
+        if (bidVolume > askVolume * 1.5) {
+            return { confidence: 60, direction: 'bullish', reason: 'Strong bid volume' };
+        } else if (askVolume > bidVolume * 1.5) {
+            return { confidence: 60, direction: 'bearish', reason: 'Strong ask volume' };
         }
-    };
-
-    derivWS.onerror = (error) => {
-        console.error('WebSocket error:', error);
-        updateAnalysisLog('WebSocket connection error');
-    };
-
-    derivWS.onclose = () => {
-        console.log('Disconnected from Deriv');
-        updateAnalysisLog('Disconnected from Deriv - attempting to reconnect...');
-        setTimeout(connectToDeriv, 5000); // Reconnect after 5 seconds
-    };
-}
-
-function handleWebSocketMessage(data) {
-    if (data.error) {
-        console.error('WebSocket error:', data.error);
-        updateAnalysisLog(`Error: ${data.error.message}`);
-        return;
-    }
-
-    switch(data.msg_type) {
-        case 'authorize':
-            handleAuthorization(data);
-            break;
-        case 'tick_history':
-            processTickHistory(data.history);
-            break;
-        case 'tick':
-            processTickUpdate(data.tick);
-            break;
-        case 'buy':
-            handleTradeResult(data);
-            break;
-        case 'balance':
-            updateBalance(data.balance);
-            break;
-        case 'proposal_open_contract':
-            handleTradeResult(data);
-            break;
-        default:
-            console.log('Unhandled message type:', data.msg_type);
-    }
-}
-
-function authenticate(token) {
-    if (!token) {
-        window.location.href = 'index.html';
-        return;
-    }
-    
-    derivWS.send(JSON.stringify({
-        authorize: token
-    }));
-}
-
-function handleAuthorization(data) {
-    if (data.authorize) {
-        accountBalance = data.authorize.balance;
-        updateBalance(accountBalance);
-        updateAnalysisLog('Successfully authenticated');
         
-        // Initialize trading session
-        tradingSession.startTime = Date.now();
-        tradingSession.profitTarget = accountBalance * CONFIG.SESSION_PROFIT_TARGET;
-        updateAnalysisLog(`Session started. Profit target: $${tradingSession.profitTarget.toFixed(2)}`);
+        return { confidence: 0, direction: 'neutral', reason: '' };
+    },
+    
+    historicalSuccess: (data) => {
+        if (tradeHistory.length < 10) return { confidence: 0, direction: 'neutral', reason: '' };
         
-        // Initialize strategy status UI
-        initializeStrategyStatus();
-        
-        // Request initial tick history
-        requestTickHistory();
-    } else {
-        updateAnalysisLog('Authentication failed');
-        window.location.href = 'index.html';
-    }
-}
-
-function initializeStrategyStatus() {
-    const strategyStatusContainer = document.getElementById('strategyStatus');
-    strategyStatusContainer.innerHTML = '';
-    
-    for (const [key, strategy] of Object.entries(STRATEGIES)) {
-        const strategyElement = document.createElement('div');
-        strategyElement.className = 'strategy-status';
-        strategyElement.id = `strategy-${key}`;
-        strategyElement.innerHTML = `
-            <div class="strategy-name">
-                <span>${strategy.name}</span>
-            </div>
-            <div class="strategy-description">${strategy.description}</div>
-            <div class="strategy-progress">
-                <div class="progress-bar" id="progress-${key}"></div>
-            </div>
-        `;
-        strategyStatusContainer.appendChild(strategyElement);
-    }
-}
-
-// Market Data Processing
-function processTickHistory(history) {
-    if (!history || !history.candles) {
-        updateAnalysisLog('Error: Invalid tick history data received');
-        return;
-    }
-    
-    tickHistory = history.candles.map(candle => ({
-        epoch: candle.epoch,
-        open: parseFloat(candle.open),
-        high: parseFloat(candle.high),
-        low: parseFloat(candle.low),
-        close: parseFloat(candle.close)
-    }));
-    
-    updateChart(tickHistory);
-    updateAnalysisLog(`Loaded ${tickHistory.length} historical ticks`);
-    
-    // Start initial analysis
-    analyzeMarket();
-}
-
-function processTickUpdate(tick) {
-    if (!tick || !tick.epoch || !tick.close) {
-        updateAnalysisLog('Error: Invalid tick data received');
-        return;
-    }
-    
-    const newTick = {
-        epoch: tick.epoch,
-        open: parseFloat(tick.open),
-        high: parseFloat(tick.high),
-        low: parseFloat(tick.low),
-        close: parseFloat(tick.close)
-    };
-    
-    // Update tick history
-    tickHistory.push(newTick);
-    if (tickHistory.length > CONFIG.HISTORY_LENGTH) {
-        tickHistory.shift();
-    }
-    
-    // Update chart
-    candlestickSeries.update(newTick);
-    
-    // Throttle analysis to prevent overloading
-    if (!this.lastAnalysis || Date.now() - this.lastAnalysis > CONFIG.ANALYSIS_INTERVAL) {
-        this.lastAnalysis = Date.now();
-        analyzeMarket();
-    }
-}
-
-function updateChart(data) {
-    if (!data || data.length === 0) return;
-    
-    try {
-        const formattedData = data.map(tick => ({
-            time: tick.epoch,
-            open: tick.open,
-            high: tick.high,
-            low: tick.low,
-            close: tick.close
-        }));
-        
-        candlestickSeries.setData(formattedData);
-        
-        // Update volume data (simplified)
-        const volumeData = data.map((tick, i) => ({
-            time: tick.epoch,
-            value: i > 0 ? Math.abs(tick.close - data[i-1].close) * 10000 : 0,
-            color: i > 0 ? (tick.close > data[i-1].close ? 'rgba(0, 180, 216, 0.5)' : 'rgba(255, 77, 77, 0.5)') : 'rgba(0, 180, 216, 0.5)'
-        }));
-        
-        volumeSeries.setData(volumeData);
-    } catch (error) {
-        console.error('Error updating chart:', error);
-        updateAnalysisLog('Error updating chart data');
-    }
-}
-
-// Trading Functions
-async function analyzeMarket() {
-    const engine = new TradingEngine();
-    if (!engine.shouldContinueTrading()) return;
-    
-    updateAnalysisLog("Starting market analysis...");
-    
-    try {
-        const analysis = await engine.analyzeMarket(tickHistory);
-        displayAnalysisResults(analysis);
-        
-        if (analysis.signal !== 'HOLD' && analysis.confidence > 0.65) {
-            executeTrade(analysis);
+        // Calculate success rate for each strategy
+        const strategyStats = {};
+        for (const trade of tradeHistory) {
+            if (!strategyStats[trade.strategy]) {
+                strategyStats[trade.strategy] = { wins: 0, total: 0 };
+            }
+            strategyStats[trade.strategy].total++;
+            if (trade.profit) strategyStats[trade.strategy].wins++;
         }
-    } catch (error) {
-        console.error('Analysis error:', error);
-        updateAnalysisLog(`Analysis failed: ${error.message}`);
-    }
-}
-
-function displayAnalysisResults(analysis) {
-    if (!analysis) return;
-    
-    document.getElementById('confidenceValue').textContent = `${(analysis.confidence * 100).toFixed(1)}%`;
-    document.getElementById('confidenceFill').style.width = `${analysis.confidence * 100}%`;
-    
-    const signalElement = document.getElementById('currentSignal');
-    if (signalElement) {
-        signalElement.innerHTML = `
-            <div class="signal-reasons">
-                ${analysis.reasons.map((r, i) => `
-                    <div class="signal-reason">
-                        <span class="reason-bullet">•</span>
-                        <span>${r}</span>
-                    </div>
-                `).join('')}
-            </div>
-        `;
-    }
-}
-
-function executeTrade(signal) {
-    if (!signal || !signal.signal) {
-        updateAnalysisLog("Error: Invalid trade signal");
-        return;
-    }
-    
-    const engine = new TradingEngine();
-    const stake = engine.calculateDynamicStake(accountBalance);
-    
-    if (stake <= 0) {
-        updateAnalysisLog("Insufficient balance or trading paused");
-        return;
-    }
-    
-    const tradeParams = {
-        proposal: 1,
-        amount: stake.toFixed(2),
-        basis: 'stake',
-        contract_type: signal.signal,
-        currency: 'USD',
-        duration: 5,
-        duration_unit: 't',
-        symbol: currentInstrument,
-        subscribe: 1
-    };
-    
-    updateAnalysisLog(`Executing ${signal.signal} trade with stake: $${stake.toFixed(2)}`);
-    derivWS.send(JSON.stringify({
-        buy: tradeParams
-    }));
-}
-
-function handleTradeResult(data) {
-    if (data.buy) {
-        const contractId = data.buy.contract_id;
-        const stake = parseFloat(data.buy.buy_price);
-        const contractType = data.buy.contract_type;
         
-        updateAnalysisLog(`Trade opened: ${contractType} ($${stake.toFixed(2)}) - Contract ID: ${contractId}`);
+        // Find the most successful strategy recently
+        let bestStrategy = null;
+        let bestWinRate = 0;
         
-        // Subscribe to updates for this contract
-        derivWS.send(JSON.stringify({
-            proposal_open_contract: 1,
-            contract_id: contractId,
-            subscribe: 1
-        }));
-    } else if (data.proposal_open_contract) {
-        const contract = data.proposal_open_contract;
+        for (const [strategy, stats] of Object.entries(strategyStats)) {
+            const winRate = stats.wins / stats.total;
+            if (winRate > bestWinRate) {
+                bestWinRate = winRate;
+                bestStrategy = strategy;
+            }
+        }
         
-        if (contract.is_expired) {
-            const profit = parseFloat(contract.profit);
-            const isWin = profit > 0;
+        if (bestStrategy && bestWinRate > 0.6) {
+            // Get the last signal from this strategy
+            const lastSignal = tradeHistory
+                .filter(t => t.strategy === bestStrategy)
+                .sort((a, b) => b.timestamp - a.timestamp)[0];
             
-            // Update trading session
-            tradingSession.trades.push({
-                contractId: contract.contract_id,
-                type: contract.contract_type,
-                stake: parseFloat(contract.buy_price),
-                profit,
-                isWin,
-                timestamp: Date.now()
-            });
+            if (lastSignal) {
+                return {
+                    confidence: Math.min(80, bestWinRate * 100),
+                    direction: lastSignal.direction === 'BUY' ? 'bullish' : 'bearish',
+                    reason: `Historical success (${(bestWinRate * 100).toFixed(0)}% win rate for ${bestStrategy})`
+                };
+            }
+        }
+        
+        return { confidence: 0, direction: 'neutral', reason: '' };
+    },
+    
+    selfLearning: (data) => {
+        // Adaptive strategy that adjusts weights based on recent performance
+        if (tradeHistory.length < 20) return { confidence: 0, direction: 'neutral', reason: '' };
+        
+        // Calculate recent performance for each strategy
+        const recentTrades = tradeHistory.slice(-20);
+        const strategyPerformance = {};
+        
+        for (const trade of recentTrades) {
+            if (!strategyPerformance[trade.strategy]) {
+                strategyPerformance[trade.strategy] = { wins: 0, total: 0 };
+            }
+            strategyPerformance[trade.strategy].total++;
+            if (trade.profit) strategyPerformance[trade.strategy].wins++;
+        }
+        
+        // Adjust weights based on performance
+        for (const [strategy, stats] of Object.entries(strategyPerformance)) {
+            const winRate = stats.wins / stats.total;
+            strategyWeights[strategy] = Math.max(0.5, Math.min(1.5, winRate * 1.5));
+        }
+        
+        // Get weighted signals from all strategies
+        const weightedSignals = [];
+        for (const [strategy, fn] of Object.entries(strategies)) {
+            if (strategy === 'selfLearning') continue;
             
-            tradingSession.pnl += profit;
-            tradingSession.winRate = tradingSession.trades.filter(t => t.isWin).length / tradingSession.trades.length;
-            
-            if (isWin) {
-                tradingSession.consecutiveLosses = 0;
+            const signal = fn(data);
+            if (signal.confidence > 0) {
+                weightedSignals.push({
+                    ...signal,
+                    weight: strategyWeights[strategy] || 1.0
+                });
+            }
+        }
+        
+        if (weightedSignals.length === 0) {
+            return { confidence: 0, direction: 'neutral', reason: '' };
+        }
+        
+        // Calculate weighted average
+        let bullishScore = 0;
+        let bearishScore = 0;
+        let totalWeight = 0;
+        
+        for (const signal of weightedSignals) {
+            if (signal.direction === 'bullish') {
+                bullishScore += signal.confidence * signal.weight;
             } else {
-                tradingSession.consecutiveLosses++;
+                bearishScore += signal.confidence * signal.weight;
+            }
+            totalWeight += signal.weight;
+        }
+        
+        const normalizedBullish = bullishScore / totalWeight;
+        const normalizedBearish = bearishScore / totalWeight;
+        
+        if (normalizedBullish > normalizedBearish + 10) {
+            return { 
+                confidence: Math.min(90, normalizedBullish), 
+                direction: 'bullish', 
+                reason: 'Self-learning model bullish bias' 
+            };
+        } else if (normalizedBearish > normalizedBullish + 10) {
+            return { 
+                confidence: Math.min(90, normalizedBearish), 
+                direction: 'bearish', 
+                reason: 'Self-learning model bearish bias' 
+            };
+        }
+        
+        return { confidence: 0, direction: 'neutral', reason: '' };
+    }
+};
+
+// Technical Indicator Implementations
+const indicators = {
+    rsi: (data) => {
+        const closes = data.historical.slice(-14).map(d => d.close);
+        const rsiValues = talib.RSI(closes, 14);
+        const currentRSI = rsiValues[rsiValues.length - 1];
+        
+        let confidence = 0;
+        let direction = 'neutral';
+        let reason = '';
+        
+        if (currentRSI > 70) {
+            confidence = 70;
+            direction = 'bearish';
+            reason = 'Overbought (RSI > 70)';
+        } else if (currentRSI < 30) {
+            confidence = 70;
+            direction = 'bullish';
+            reason = 'Oversold (RSI < 30)';
+        } else if (currentRSI > 50 && rsiValues[rsiValues.length - 1] > rsiValues[rsiValues.length - 2]) {
+            confidence = 55;
+            direction = 'bullish';
+            reason = 'RSI rising above 50';
+        } else if (currentRSI < 50 && rsiValues[rsiValues.length - 1] < rsiValues[rsiValues.length - 2]) {
+            confidence = 55;
+            direction = 'bearish';
+            reason = 'RSI falling below 50';
+        }
+        
+        return { confidence, direction, reason };
+    },
+    
+    macd: (data) => {
+        const closes = data.historical.map(d => d.close);
+        const macd = talib.MACD(closes, 12, 26, 9);
+        
+        const currentMACD = macd.MACD[macd.MACD.length - 1];
+        const currentSignal = macd.signal[macd.signal.length - 1];
+        const currentHist = macd.histogram[macd.histogram.length - 1];
+        
+        let confidence = 0;
+        let direction = 'neutral';
+        let reason = '';
+        
+        if (currentMACD > currentSignal && macd.MACD[macd.MACD.length - 2] <= macd.signal[macd.signal.length - 2]) {
+            confidence = 75;
+            direction = 'bullish';
+            reason = 'MACD crossover above signal line';
+        } else if (currentMACD < currentSignal && macd.MACD[macd.MACD.length - 2] >= macd.signal[macd.signal.length - 2]) {
+            confidence = 75;
+            direction = 'bearish';
+            reason = 'MACD crossover below signal line';
+        } else if (currentHist > 0 && currentHist > macd.histogram[macd.histogram.length - 2]) {
+            confidence = 60;
+            direction = 'bullish';
+            reason = 'MACD histogram increasing';
+        } else if (currentHist < 0 && currentHist < macd.histogram[macd.histogram.length - 2]) {
+            confidence = 60;
+            direction = 'bearish';
+            reason = 'MACD histogram decreasing';
+        }
+        
+        return { confidence, direction, reason };
+    },
+    
+    bollinger: (data) => {
+        const closes = data.historical.slice(-20).map(d => d.close);
+        const bb = talib.BBANDS(closes, 20, 2);
+        const currentPrice = data.realtime[data.realtime.length - 1].quote;
+        
+        let confidence = 0;
+        let direction = 'neutral';
+        let reason = '';
+        
+        if (currentPrice > bb.upper[bb.upper.length - 1]) {
+            confidence = 70;
+            direction = 'bearish';
+            reason = 'Price above upper Bollinger band';
+        } else if (currentPrice < bb.lower[bb.lower.length - 1]) {
+            confidence = 70;
+            direction = 'bullish';
+            reason = 'Price below lower Bollinger band';
+        } else if (currentPrice > bb.middle[bb.middle.length - 1] && 
+                  data.realtime[data.realtime.length - 2].quote <= bb.middle[bb.middle.length - 1]) {
+            confidence = 60;
+            direction = 'bullish';
+            reason = 'Price crossed above middle band';
+        } else if (currentPrice < bb.middle[bb.middle.length - 1] && 
+                  data.realtime[data.realtime.length - 2].quote >= bb.middle[bb.middle.length - 1]) {
+            confidence = 60;
+            direction = 'bearish';
+            reason = 'Price crossed below middle band';
+        }
+        
+        return { confidence, direction, reason };
+    },
+    
+    ema: (data) => {
+        const closes = data.historical.map(d => d.close);
+        const ema20 = talib.EMA(closes, 20);
+        const ema50 = talib.EMA(closes, 50);
+        const ema200 = talib.EMA(closes, 200);
+        
+        const currentPrice = data.realtime[data.realtime.length - 1].quote;
+        
+        let confidence = 0;
+        let direction = 'neutral';
+        let reason = '';
+        
+        // Check EMA crossovers
+        if (ema20[ema20.length - 1] > ema50[ema50.length - 1] && 
+            ema20[ema20.length - 2] <= ema50[ema50.length - 2]) {
+            confidence = 75;
+            direction = 'bullish';
+            reason = 'EMA 20 crossed above EMA 50';
+        } else if (ema20[ema20.length - 1] < ema50[ema50.length - 1] && 
+                  ema20[ema20.length - 2] >= ema50[ema50.length - 2]) {
+            confidence = 75;
+            direction = 'bearish';
+            reason = 'EMA 20 crossed below EMA 50';
+        }
+        
+        // Check price relative to EMAs
+        if (currentPrice > ema20[ema20.length - 1] && 
+            currentPrice > ema50[ema50.length - 1] && 
+            currentPrice > ema200[ema200.length - 1]) {
+            confidence = Math.max(confidence, 65);
+            direction = 'bullish';
+            reason = 'Price above all key EMAs (20, 50, 200)';
+        } else if (currentPrice < ema20[ema20.length - 1] && 
+                  currentPrice < ema50[ema50.length - 1] && 
+                  currentPrice < ema200[ema200.length - 1]) {
+            confidence = Math.max(confidence, 65);
+            direction = 'bearish';
+            reason = 'Price below all key EMAs (20, 50, 200)';
+        }
+        
+        return { confidence, direction, reason };
+    },
+    
+    stochastic: (data) => {
+        const closes = data.historical.map(d => d.close);
+        const highs = data.historical.map(d => d.high);
+        const lows = data.historical.map(d => d.low);
+        
+        const stoch = talib.STOCH(highs, lows, closes, 14, 3, 3);
+        const currentK = stoch.slowK[stoch.slowK.length - 1];
+        const currentD = stoch.slowD[stoch.slowD.length - 1];
+        
+        let confidence = 0;
+        let direction = 'neutral';
+        let reason = '';
+        
+        if (currentK > 80 && currentD > 80) {
+            confidence = 70;
+            direction = 'bearish';
+            reason = 'Stochastic overbought (>80)';
+        } else if (currentK < 20 && currentD < 20) {
+            confidence = 70;
+            direction = 'bullish';
+            reason = 'Stochastic oversold (<20)';
+        } else if (currentK > currentD && stoch.slowK[stoch.slowK.length - 2] <= stoch.slowD[stoch.slowD.length - 2]) {
+            confidence = 65;
+            direction = 'bullish';
+            reason = 'Stochastic %K crossed above %D';
+        } else if (currentK < currentD && stoch.slowK[stoch.slowK.length - 2] >= stoch.slowD[stoch.slowD.length - 2]) {
+            confidence = 65;
+            direction = 'bearish';
+            reason = 'Stochastic %K crossed below %D';
+        }
+        
+        return { confidence, direction, reason };
+    },
+    
+    parabolicSAR: (data) => {
+        const highs = data.historical.map(d => d.high);
+        const lows = data.historical.map(d => d.low);
+        const sar = talib.SAR(highs, lows, 0.02, 0.2);
+        
+        const currentPrice = data.realtime[data.realtime.length - 1].quote;
+        const currentSAR = sar[sar.length - 1];
+        
+        let confidence = 0;
+        let direction = 'neutral';
+        let reason = '';
+        
+        if (currentPrice > currentSAR && data.realtime[data.realtime.length - 2].quote <= sar[sar.length - 2]) {
+            confidence = 75;
+            direction = 'bullish';
+            reason = 'Price crossed above Parabolic SAR';
+        } else if (currentPrice < currentSAR && data.realtime[data.realtime.length - 2].quote >= sar[sar.length - 2]) {
+            confidence = 75;
+            direction = 'bearish';
+            reason = 'Price crossed below Parabolic SAR';
+        } else if (currentPrice > currentSAR) {
+            confidence = 60;
+            direction = 'bullish';
+            reason = 'Price above Parabolic SAR';
+        } else if (currentPrice < currentSAR) {
+            confidence = 60;
+            direction = 'bearish';
+            reason = 'Price below Parabolic SAR';
+        }
+        
+        return { confidence, direction, reason };
+    },
+    
+    atr: (data) => {
+        const highs = data.historical.map(d => d.high);
+        const lows = data.historical.map(d => d.low);
+        const closes = data.historical.map(d => d.close);
+        
+        const atr = talib.ATR(highs, lows, closes, 14);
+        const currentATR = atr[atr.length - 1];
+        const avgATR = atr.reduce((sum, val) => sum + val, 0) / atr.length;
+        
+        let confidence = 0;
+        let direction = 'neutral';
+        let reason = '';
+        
+        if (currentATR > avgATR * 1.5) {
+            confidence = 70;
+            direction = data.realtime[data.realtime.length - 1].quote > 
+                       data.realtime[data.realtime.length - 2].quote ? 'bullish' : 'bearish';
+            reason = 'High volatility (ATR > 1.5x average)';
+        } else if (currentATR < avgATR * 0.5) {
+            confidence = 60;
+            direction = 'neutral';
+            reason = 'Low volatility (ATR < 0.5x average)';
+        }
+        
+        return { confidence, direction, reason };
+    },
+    
+    ichimoku: (data) => {
+        const highs = data.historical.map(d => d.high);
+        const lows = data.historical.map(d => d.low);
+        
+        const ichimoku = talib.ICHIMOKU(highs, lows, 9, 26, 52);
+        const currentPrice = data.realtime[data.realtime.length - 1].quote;
+        
+        let confidence = 0;
+        let direction = 'neutral';
+        let reason = '';
+        
+        // Tenkan/Kijun crossover
+        if (ichimoku.tenkan[ichimoku.tenkan.length - 1] > ichimoku.kijun[ichimoku.kijun.length - 1] && 
+            ichimoku.tenkan[ichimoku.tenkan.length - 2] <= ichimoku.kijun[ichimoku.kijun.length - 2]) {
+            confidence = 75;
+            direction = 'bullish';
+            reason = 'Tenkan-sen crossed above Kijun-sen';
+        } else if (ichimoku.tenkan[ichimoku.tenkan.length - 1] < ichimoku.kijun[ichimoku.kijun.length - 1] && 
+                  ichimoku.tenkan[ichimoku.tenkan.length - 2] >= ichimoku.kijun[ichimoku.kijun.length - 2]) {
+            confidence = 75;
+            direction = 'bearish';
+            reason = 'Tenkan-sen crossed below Kijun-sen';
+        }
+        
+        // Price relative to cloud
+        const currentSpanA = ichimoku.senkouSpanA[ichimoku.senkouSpanA.length - 26];
+        const currentSpanB = ichimoku.senkouSpanB[ichimoku.senkouSpanB.length - 26];
+        
+        if (currentPrice > currentSpanA && currentPrice > currentSpanB) {
+            confidence = Math.max(confidence, 70);
+            direction = 'bullish';
+            reason = 'Price above Ichimoku cloud';
+        } else if (currentPrice < currentSpanA && currentPrice < currentSpanB) {
+            confidence = Math.max(confidence, 70);
+            direction = 'bearish';
+            reason = 'Price below Ichimoku cloud';
+        } else if (currentSpanA > currentSpanB && currentPrice > currentSpanA) {
+            confidence = Math.max(confidence, 65);
+            direction = 'bullish';
+            reason = 'Price in bullish Ichimoku cloud';
+        } else if (currentSpanA < currentSpanB && currentPrice < currentSpanB) {
+            confidence = Math.max(confidence, 65);
+            direction = 'bearish';
+            reason = 'Price in bearish Ichimoku cloud';
+        }
+        
+        return { confidence, direction, reason };
+    },
+    
+    adx: (data) => {
+        const highs = data.historical.map(d => d.high);
+        const lows = data.historical.map(d => d.low);
+        const closes = data.historical.map(d => d.close);
+        
+        const adx = talib.ADX(highs, lows, closes, 14);
+        const currentADX = adx[adx.length - 1];
+        
+        let confidence = 0;
+        let direction = 'neutral';
+        let reason = '';
+        
+        if (currentADX > 25) {
+            const plusDI = talib.PLUS_DI(highs, lows, closes, 14);
+            const minusDI = talib.MINUS_DI(highs, lows, closes, 14);
+            
+            if (plusDI[plusDI.length - 1] > minusDI[minusDI.length - 1]) {
+                confidence = 70;
+                direction = 'bullish';
+                reason = 'Strong trend (ADX > 25) with +DI > -DI';
+            } else {
+                confidence = 70;
+                direction = 'bearish';
+                reason = 'Strong trend (ADX > 25) with -DI > +DI';
+            }
+        } else if (currentADX < 20) {
+            confidence = 60;
+            direction = 'neutral';
+            reason = 'Weak trend (ADX < 20)';
+        }
+        
+        return { confidence, direction, reason };
+    },
+    
+    volume: (data) => {
+        const recentTicks = data.realtime.slice(-100);
+        const buyVolume = recentTicks.filter(t => t.tickDirection === 'PlusTick').length;
+        const sellVolume = recentTicks.filter(t => t.tickDirection === 'MinusTick').length;
+        const volumeRatio = buyVolume / (buyVolume + sellVolume);
+        
+        let confidence = 0;
+        let direction = 'neutral';
+        let reason = '';
+        
+        if (volumeRatio > 0.7) {
+            confidence = 65;
+            direction = 'bullish';
+            reason = 'Strong buying volume (70%+)';
+        } else if (volumeRatio < 0.3) {
+            confidence = 65;
+            direction = 'bearish';
+            reason = 'Strong selling volume (70%+)';
+        } else if (volumeRatio > 0.6 && 
+                  recentTicks[recentTicks.length - 1].quote > recentTicks[recentTicks.length - 2].quote) {
+            confidence = 60;
+            direction = 'bullish';
+            reason = 'Increasing price with buying volume';
+        } else if (volumeRatio < 0.4 && 
+                  recentTicks[recentTicks.length - 1].quote < recentTicks[recentTicks.length - 2].quote) {
+            confidence = 60;
+            direction = 'bearish';
+            reason = 'Decreasing price with selling volume';
+        }
+        
+        return { confidence, direction, reason };
+    }
+};
+
+// Helper Functions
+function findSupportResistanceLevels(data) {
+    // Implementation of support/resistance detection
+    // This is a simplified version - in production you'd want a more sophisticated algorithm
+    const levels = [];
+    const sensitivity = 0.005; // 0.5%
+    
+    // Find potential levels by looking for areas where price reversed multiple times
+    for (let i = 2; i < data.length - 2; i++) {
+        // Check for resistance
+        if (data[i].high > data[i-1].high && data[i].high > data[i+1].high &&
+            Math.abs(data[i].high - data[i-2].high) < data[i].high * sensitivity &&
+            Math.abs(data[i].high - data[i+2].high) < data[i].high * sensitivity) {
+            levels.push({ price: data[i].high, type: 'resistance' });
+        }
+        
+        // Check for support
+        if (data[i].low < data[i-1].low && data[i].low < data[i+1].low &&
+            Math.abs(data[i].low - data[i-2].low) < data[i].low * sensitivity &&
+            Math.abs(data[i].low - data[i+2].low) < data[i].low * sensitivity) {
+            levels.push({ price: data[i].low, type: 'support' });
+        }
+    }
+    
+    // Merge nearby levels
+    const mergedLevels = [];
+    levels.sort((a, b) => a.price - b.price);
+    
+    for (const level of levels) {
+        const nearbyLevel = mergedLevels.find(l => Math.abs(l.price - level.price) < level.price * sensitivity);
+        if (nearbyLevel) {
+            nearbyLevel.strength++;
+        } else {
+            mergedLevels.push({ ...level, strength: 1 });
+        }
+    }
+    
+    // Filter for significant levels (touched at least twice)
+    return mergedLevels.filter(l => l.strength >= 2);
+}
+
+function identifySupplyDemandZones(data) {
+    // Simplified supply/demand zone detection
+    const zones = [];
+    
+    // Look for strong moves followed by consolidation
+    for (let i = 20; i < data.length - 10; i++) {
+        const moveUp = data[i].close > data[i-5].close * 1.03; // 3% move up
+        const moveDown = data[i].close < data[i-5].close * 0.97; // 3% move down
+        
+        if (moveUp || moveDown) {
+            // Look for consolidation after the move
+            let consolidation = true;
+            for (let j = i; j < i + 10 && j < data.length; j++) {
+                if (Math.abs(data[j].close - data[i].close) > data[i].close * 0.01) {
+                    consolidation = false;
+                    break;
+                }
             }
             
-            updatePerformanceMetrics();
-            updateAnalysisLog(`Trade closed: ${contract.contract_type} - ${isWin ? 'WIN' : 'LOSS'} ($${profit.toFixed(2)})`);
-            
-            // Check if we should continue trading
-            const engine = new TradingEngine();
-            if (!engine.shouldContinueTrading()) {
-                showSessionSummary();
+            if (consolidation) {
+                const range = {
+                    start: Math.min(...data.slice(i, i+10).map(d => d.low)),
+                    end: Math.max(...data.slice(i, i+10).map(d => d.high)),
+                    type: moveUp ? 'demand' : 'supply'
+                };
+                
+                // Check if this zone overlaps with an existing one
+                const existingZone = zones.find(z => 
+                    (range.start >= z.start && range.start <= z.end) ||
+                    (range.end >= z.start && range.end <= z.end)
+                );
+                
+                if (!existingZone) {
+                    zones.push(range);
+                }
             }
         }
     }
+    
+    return zones;
 }
 
-// UI Functions
-function updateAnalysisLog(message, data = null) {
+function detectChartPatterns(data) {
+    // Simplified pattern detection (in production, use a more robust algorithm)
+    const patterns = [];
+    
+    // Head and Shoulders
+    if (data.length >= 5) {
+        const leftShoulder = data[data.length - 5].high;
+        const head = data[data.length - 3].high;
+        const rightShoulder = data[data.length - 1].high;
+        const neckline = Math.min(data[data.length - 4].low, data[data.length - 2].low);
+        
+        if (head > leftShoulder && head > rightShoulder &&
+            Math.abs(leftShoulder - rightShoulder) / leftShoulder < 0.01 && // Shoulders roughly equal
+            data[data.length - 1].close < neckline) {
+            patterns.push({
+                name: 'Head and Shoulders',
+                confidence: 75,
+                direction: 'bearish'
+            });
+        }
+    }
+    
+    // Inverse Head and Shoulders
+    if (data.length >= 5) {
+        const leftShoulder = data[data.length - 5].low;
+        const head = data[data.length - 3].low;
+        const rightShoulder = data[data.length - 1].low;
+        const neckline = Math.max(data[data.length - 4].high, data[data.length - 2].high);
+        
+        if (head < leftShoulder && head < rightShoulder &&
+            Math.abs(leftShoulder - rightShoulder) / leftShoulder < 0.01 && // Shoulders roughly equal
+            data[data.length - 1].close > neckline) {
+            patterns.push({
+                name: 'Inverse Head and Shoulders',
+                confidence: 75,
+                direction: 'bullish'
+            });
+        }
+    }
+    
+    // Double Top
+    if (data.length >= 3) {
+        const firstTop = data[data.length - 3].high;
+        const secondTop = data[data.length - 1].high;
+        const trough = data[data.length - 2].low;
+        
+        if (Math.abs(firstTop - secondTop) / firstTop < 0.01 && // Tops roughly equal
+            data[data.length - 1].close < trough) {
+            patterns.push({
+                name: 'Double Top',
+                confidence: 70,
+                direction: 'bearish'
+            });
+        }
+    }
+    
+    // Double Bottom
+    if (data.length >= 3) {
+        const firstBottom = data[data.length - 3].low;
+        const secondBottom = data[data.length - 1].low;
+        const peak = data[data.length - 2].high;
+        
+        if (Math.abs(firstBottom - secondBottom) / firstBottom < 0.01 && // Bottoms roughly equal
+            data[data.length - 1].close > peak) {
+            patterns.push({
+                name: 'Double Bottom',
+                confidence: 70,
+                direction: 'bullish'
+            });
+        }
+    }
+    
+    // Triangles
+    if (data.length >= 10) {
+        const highs = data.slice(-10).map(d => d.high);
+        const lows = data.slice(-10).map(d => d.low);
+        
+        const maxHigh = Math.max(...highs);
+        const minHigh = Math.min(...highs);
+        const maxLow = Math.max(...lows);
+        const minLow = Math.min(...lows);
+        
+        // Ascending Triangle
+        if ((maxHigh - minHigh) / maxHigh < 0.01 && // Flat top
+            (maxLow - minLow) / maxLow > 0.03) { // Rising bottom
+            patterns.push({
+                name: 'Ascending Triangle',
+                confidence: 65,
+                direction: 'bullish'
+            });
+        }
+        
+        // Descending Triangle
+        if ((maxLow - minLow) / maxLow < 0.01 && // Flat bottom
+            (maxHigh - minHigh) / maxHigh > 0.03) { // Falling top
+            patterns.push({
+                name: 'Descending Triangle',
+                confidence: 65,
+                direction: 'bearish'
+            });
+        }
+        
+        // Symmetrical Triangle
+        if ((maxHigh - minHigh) / maxHigh > 0.02 && 
+            (maxLow - minLow) / maxLow > 0.02 &&
+            (maxHigh - minHigh) / (maxLow - minLow) > 0.8 &&
+            (maxHigh - minHigh) / (maxLow - minLow) < 1.2) {
+            patterns.push({
+                name: 'Symmetrical Triangle',
+                confidence: 60,
+                direction: data[data.length - 1].close > (maxHigh + minLow)/2 ? 'bullish' : 'bearish'
+            });
+        }
+    }
+    
+    return patterns;
+}
+
+function checkReversalPatterns(candles) {
+    const patterns = [];
+    
+    // Hammer
+    if (candles.length >= 1) {
+        const candle = candles[candles.length - 1];
+        const bodySize = Math.abs(candle.open - candle.close);
+        const lowerWick = candle.close > candle.open ? 
+            candle.close - candle.low : candle.open - candle.low;
+        const upperWick = candle.high - (candle.close > candle.open ? candle.close : candle.open);
+        
+        if (lowerWick > bodySize * 2 && upperWick < bodySize * 0.5) {
+            patterns.push({
+                name: 'Hammer',
+                confidence: 70,
+                direction: 'bullish'
+            });
+        }
+    }
+    
+    // Shooting Star
+    if (candles.length >= 1) {
+        const candle = candles[candles.length - 1];
+        const bodySize = Math.abs(candle.open - candle.close);
+        const lowerWick = candle.close > candle.open ? 
+            candle.close - candle.low : candle.open - candle.low;
+        const upperWick = candle.high - (candle.close > candle.open ? candle.close : candle.open);
+        
+        if (upperWick > bodySize * 2 && lowerWick < bodySize * 0.5) {
+            patterns.push({
+                name: 'Shooting Star',
+                confidence: 70,
+                direction: 'bearish'
+            });
+        }
+    }
+    
+    // Engulfing
+    if (candles.length >= 2) {
+        const prevCandle = candles[candles.length - 2];
+        const currentCandle = candles[candles.length - 1];
+        
+        if (prevCandle.close > prevCandle.open && // Previous was bullish
+            currentCandle.open > currentCandle.close && // Current is bearish
+            currentCandle.open > prevCandle.close && 
+            currentCandle.close < prevCandle.open) {
+            patterns.push({
+                name: 'Bearish Engulfing',
+                confidence: 75,
+                direction: 'bearish'
+            });
+        } else if (prevCandle.close < prevCandle.open && // Previous was bearish
+                  currentCandle.open < currentCandle.close && // Current is bullish
+                  currentCandle.open < prevCandle.close && 
+                  currentCandle.close > prevCandle.open) {
+            patterns.push({
+                name: 'Bullish Engulfing',
+                confidence: 75,
+                direction: 'bullish'
+            });
+        }
+    }
+    
+    // Morning Star
+    if (candles.length >= 3) {
+        const first = candles[candles.length - 3];
+        const second = candles[candles.length - 2];
+        const third = candles[candles.length - 1];
+        
+        if (first.close < first.open && // First is bearish
+            Math.abs(second.close - second.open) / second.open < 0.01 && // Second is doji
+            third.close > third.open && // Third is bullish
+            third.close > (first.open + first.close)/2) { // Closes above midpoint of first
+            patterns.push({
+                name: 'Morning Star',
+                confidence: 80,
+                direction: 'bullish'
+            });
+        }
+    }
+    
+    // Evening Star
+    if (candles.length >= 3) {
+        const first = candles[candles.length - 3];
+        const second = candles[candles.length - 2];
+        const third = candles[candles.length - 1];
+        
+        if (first.close > first.open && // First is bullish
+            Math.abs(second.close - second.open) / second.open < 0.01 && // Second is doji
+            third.close < third.open && // Third is bearish
+            third.close < (first.open + first.close)/2) { // Closes below midpoint of first
+            patterns.push({
+                name: 'Evening Star',
+                confidence: 80,
+                direction: 'bearish'
+            });
+        }
+    }
+    
+    return patterns;
+}
+
+function calculateVWAP(data) {
+    let cumulativeVolume = 0;
+    let cumulativePV = 0;
+    
+    for (const bar of data) {
+        const typicalPrice = (bar.high + bar.low + bar.close) / 3;
+        cumulativePV += typicalPrice * bar.volume;
+        cumulativeVolume += bar.volume;
+    }
+    
+    return cumulativeVolume > 0 ? cumulativePV / cumulativeVolume : 0;
+}
+
+function extractFeatures(data) {
+    // Extract features for neural network (simplified)
+    const closes = data.historical.slice(-50).map(d => d.close);
+    const returns = [];
+    
+    for (let i = 1; i < closes.length; i++) {
+        returns.push((closes[i] - closes[i-1]) / closes[i-1]);
+    }
+    
+    return [
+        { name: 'mean_return', value: returns.reduce((a, b) => a + b, 0) / returns.length, bullishWeight: 0.5, bearishWeight: -0.5 },
+        { name: 'volatility', value: Math.sqrt(returns.reduce((sq, n) => sq + Math.pow(n, 2), 0) / returns.length), bullishWeight: -0.3, bearishWeight: -0.3 },
+        { name: 'skewness', value: returns.reduce((sum, r) => sum + Math.pow(r, 3), 0) / (returns.length * Math.pow(volatility, 3)), bullishWeight: 0.7, bearishWeight: -0.7 },
+        // Add more features as needed
+    ];
+}
+
+// Initialize API Connection
+function initializeAPI() {
+    api = new DerivAPIBrowser({ endpoint: API_ENDPOINT, appId: APP_ID });
+    document.getElementById('executeBtn').addEventListener('click', () => {
+        const direction = document.getElementById('signalDirection').textContent;
+        if (direction !== '--') {
+            executeTrade(direction);
+        }
+    });
+}
+
+// Signal Display
+function displaySignal(signal) {
+    document.getElementById('signalDirection').textContent = signal.direction;
+    document.getElementById('signalDirection').className = signal.direction === 'BUY' ? 'positive' : 'negative';
+    document.getElementById('signalStrength').textContent = `${signal.confidence.toFixed(1)}%`;
+    
+    updateConfirmationDisplay('strategyConfirmations', signal.strategyConfirmations);
+    updateConfirmationDisplay('indicatorConfirmations', signal.indicatorConfirmations);
+    
+    // Add to log
+    const now = new Date();
     const logEntry = document.createElement('div');
     logEntry.className = 'log-entry';
     logEntry.innerHTML = `
-        <div class="log-time">${new Date().toLocaleTimeString()}</div>
-        <div class="log-message">${message}</div>
+        <span class="time">${now.toLocaleTimeString()}</span>
+        <span class="direction ${signal.direction.toLowerCase()}">${signal.direction}</span>
+        <span class="confidence">${signal.confidence.toFixed(1)}%</span>
+        <span class="instrument">${currentInstrument}</span>
     `;
+    document.getElementById('tradeLogs').prepend(logEntry);
+}
+
+function updateConfirmationDisplay(elementId, confirmations) {
+    const container = document.getElementById(elementId);
+    container.innerHTML = '';
     
-    if (data) {
-        const pre = document.createElement('pre');
-        pre.textContent = JSON.stringify(data, null, 2);
-        logEntry.appendChild(pre);
-    }
-    
-    const logContainer = document.getElementById('analysisLog');
-    if (logContainer) {
-        logContainer.prepend(logEntry);
-        
-        // Auto-scroll and limit log entries
-        if (logContainer.children.length > 100) {
-            logContainer.removeChild(logContainer.lastChild);
+    for (const [name, result] of Object.entries(confirmations)) {
+        if (result.confidence > 0) {
+            const div = document.createElement('div');
+            div.className = `confirmation ${result.direction}`;
+            div.innerHTML = `
+                <span class="name">${name}</span>
+                <span class="confidence">${result.confidence}%</span>
+                <span class="reason">${result.reason}</span>
+            `;
+            container.appendChild(div);
         }
     }
 }
 
-function updateBalance(balance) {
-    accountBalance = balance;
-    const balanceElement = document.getElementById('balance');
-    if (balanceElement) {
-        balanceElement.textContent = balance.toFixed(2);
+// Trade Execution
+async function executeTrade(direction) {
+    const now = Date.now();
+    if (now - lastSignalTime < 30000) { // 30-second cooldown
+        return;
+    }
+    lastSignalTime = now;
+    
+    const amount = parseFloat(document.getElementById('tradeAmount').value);
+    const maxTrades = parseInt(document.getElementById('maxTrades').value);
+    
+    if (tradeHistory.length >= maxTrades) {
+        handleError('Trade limit reached', new Error(`Maximum ${maxTrades} trades reached`));
+        return;
+    }
+    
+    try {
+        const response = await api.buy({
+            price: amount,
+            amount: amount,
+            basis: 'stake',
+            contract_type: `${direction.toLowerCase()}`,
+            currency: currentAccount.currency,
+            duration: PREDICTION_WINDOW,
+            duration_unit: 'm',
+            symbol: currentInstrument
+        });
+        
+        const trade = {
+            id: response.buy.contract_id,
+            direction,
+            amount,
+            timestamp: new Date(),
+            instrument: currentInstrument,
+            strategy: 'combined',
+            profit: response.buy.profit > 0
+        };
+        
+        tradeHistory.push(trade);
+        logTrade(trade);
+        
+    } catch (error) {
+        handleError('Trade execution failed', error);
     }
 }
 
-function updatePerformanceMetrics() {
-    const pnlElement = document.getElementById('pnl');
-    const winRateElement = document.getElementById('winRate');
-    const totalTradesElement = document.getElementById('totalTrades');
-    const profitFactorElement = document.getElementById('profitFactor');
-    
-    if (pnlElement) pnlElement.textContent = `$${tradingSession.pnl.toFixed(2)}`;
-    if (winRateElement) winRateElement.textContent = `${(tradingSession.winRate * 100).toFixed(1)}%`;
-    if (totalTradesElement) totalTradesElement.textContent = tradingSession.trades.length;
-    
-    const wins = tradingSession.trades.filter(t => t.isWin).length;
-    const losses = tradingSession.trades.length - wins;
-    const profitFactor = losses > 0 ? (wins / losses) : wins;
-    if (profitFactorElement) profitFactorElement.textContent = profitFactor.toFixed(2);
-}
-
-function showSessionSummary() {
-    const duration = (Date.now() - tradingSession.startTime) / 1000 / 60; // in minutes
-    const summary = `
-        <h3>Trading Session Summary</h3>
-        <p>Duration: ${duration.toFixed(1)} minutes</p>
-        <p>Total Trades: ${tradingSession.trades.length}</p>
-        <p>Win Rate: ${(tradingSession.winRate * 100).toFixed(1)}%</p>
-        <p>PNL: $${tradingSession.pnl.toFixed(2)}</p>
-        <p>Status: ${tradingSession.status === 'target_reached' ? 'Profit Target Reached' : 'Trading Stopped'}</p>
+function logTrade(trade) {
+    const logEntry = document.createElement('div');
+    logEntry.className = `trade-log ${trade.direction.toLowerCase()} ${trade.profit ? 'profit' : 'loss'}`;
+    logEntry.innerHTML = `
+        <span class="time">${trade.timestamp.toLocaleTimeString()}</span>
+        <span class="direction">${trade.direction}</span>
+        <span class="amount">${trade.amount} ${currentAccount.currency}</span>
+        <span class="instrument">${trade.instrument}</span>
+        <span class="outcome">${trade.profit ? 'WIN' : 'LOSS'}</span>
     `;
-    
-    const summaryElement = document.createElement('div');
-    summaryElement.className = 'session-summary';
-    summaryElement.innerHTML = summary;
-    
-    const logContainer = document.getElementById('analysisLog');
-    if (logContainer) {
-        logContainer.prepend(summaryElement);
-    }
+    document.getElementById('tradeLogs').prepend(logEntry);
 }
 
-// Instrument Handling
-function requestTickHistory() {
-    if (derivWS && derivWS.readyState === WebSocket.OPEN) {
-        derivWS.send(JSON.stringify({
-            ticks_history: currentInstrument,
-            adjust_start_time: 1,
-            count: 1000,
-            end: 'latest',
-            granularity: 60, // 1 minute candles
-            style: 'candles',
-            subscribe: 1
-        }));
-    } else {
-        updateAnalysisLog('Error: WebSocket not ready for tick history request');
-    }
-}
-
-// Initialize
-function getOAuthToken() {
-    const params = new URLSearchParams(window.location.search);
-    return params.get('token');
+// Error Handling
+function handleError(context, error) {
+    console.error(context, error);
+    const errorDiv = document.createElement('div');
+    errorDiv.className = 'error-message';
+    errorDiv.textContent = `${context}: ${error.message}`;
+    document.getElementById('tradeLogs').prepend(errorDiv);
 }
 
 // Initialize the application
-function initializeApp() {
-    initializeCharts();
-    connectToDeriv();
+window.addEventListener('DOMContentLoaded', () => {
+    initializeAPI();
     
-    // Instrument selection
-    const instrumentSelect = document.getElementById('instrumentSelect');
-    if (instrumentSelect) {
-        instrumentSelect.addEventListener('change', (e) => {
-            currentInstrument = e.target.value;
-            updateAnalysisLog(`Switched to instrument: ${currentInstrument}`);
-            requestTickHistory();
-        });
+    // Initialize strategy performance tracking
+    for (const strategy of Object.keys(strategies)) {
+        strategyPerformance[strategy] = { wins: 0, losses: 0 };
     }
-    
-    // Timeframe buttons
-    document.getElementById('timeframe1m')?.addEventListener('click', () => changeTimeframe(60));
-    document.getElementById('timeframe5m')?.addEventListener('click', () => changeTimeframe(300));
-    document.getElementById('timeframe15m')?.addEventListener('click', () => changeTimeframe(900));
-    document.getElementById('timeframe1h')?.addEventListener('click', () => changeTimeframe(3600));
-    
-    // Signal actions
-    document.getElementById('executeSignal')?.addEventListener('click', () => {
-        const signalElement = document.getElementById('currentSignal');
-        if (signalElement) {
-            const signalMatch = signalElement.textContent.match(/(CALL|PUT)/);
-            if (signalMatch) {
-                executeTrade({ signal: signalMatch[0], confidence: 1 });
-            } else {
-                updateAnalysisLog("No valid signal to execute");
-            }
-        }
-    });
-    
-    document.getElementById('ignoreSignal')?.addEventListener('click', () => {
-        updateAnalysisLog("Signal ignored by user");
-    });
-}
-
-function changeTimeframe(seconds) {
-    if (derivWS && derivWS.readyState === WebSocket.OPEN) {
-        derivWS.send(JSON.stringify({
-            ticks_history: currentInstrument,
-            adjust_start_time: 1,
-            count: 1000,
-            end: 'latest',
-            granularity: seconds,
-            style: 'candles',
-            subscribe: 1
-        }));
-        
-        updateAnalysisLog(`Changed timeframe to ${seconds/60} minutes`);
-    } else {
-        updateAnalysisLog('Error: WebSocket not ready for timeframe change');
-    }
-}
-
-// Start the application when DOM is loaded
-document.addEventListener('DOMContentLoaded', initializeApp);
+});
