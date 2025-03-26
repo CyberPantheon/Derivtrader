@@ -568,13 +568,13 @@
         <h2>AI Trading Signal Assistant</h2>
         <div class="account-controls">
             <select class="account-selector" id="accountList" disabled>
-                <option>Loading accounts...</option>
+                <option>Select account...</option>
             </select>
-            <button class="account-authenticate" id="authenticateBtn" disabled>Authenticate</button>
+            <button class="account-authenticate" id="authenticateBtn">Authenticate</button>
         </div>
         <div class="instrument-controls">
             <select class="instrument-selector" id="instrumentList" disabled>
-                <option>Loading instruments...</option>
+                <option>Select instrument...</option>
             </select>
             <button class="instrument-analyze" id="analyzeBtn" disabled>Analyze</button>
         </div>
@@ -635,7 +635,7 @@
                 <div class="confidence-meter">
                     <span class="confidence-label">Confidence:</span>
                     <div class="confidence-fill">
-                        <div id="confidenceFill" style="width: 0%; height: 100%; background: linear-gradient(90deg, var(--secondary-color), var(--primary-color));"></div>
+                        <div id="confidenceFill" style="width: 0%; height: 100%; background: linear-gradient(90deg, var(--secondary-color), var(--primary-color);"></div>
                     </div>
                     <span class="confidence-value" id="confidenceValue">0%</span>
                 </div>
@@ -652,16 +652,12 @@
         </div>
     </div>
 
+    <!-- Load required libraries first -->
     <script src="https://cdn.jsdelivr.net/npm/lightweight-charts/dist/lightweight-charts.standalone.production.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/@deriv/deriv-api/dist/DerivAPIBrowser.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/technicalindicators/dist/technicalindicators.min.js"></script>
     
-    <!-- Your Script -->
-    <script src="https://cdn.jsdelivr.net/npm/@deriv/deriv-api/dist/DerivAPIBrowser.min.js"></script>
-<script src="https://unpkg.com/lightweight-charts/dist/lightweight-charts.standalone.production.js"></script>
-<script src="https://cdn.jsdelivr.net/npm/talib"></script>
+    <!-- Then load your script -->
     <script src="options_script.js"></script>
-    
-    <!-- Frontend Sync Script -->
-    
 </body>
 </html>
