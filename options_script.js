@@ -24,26 +24,56 @@ document.addEventListener('DOMContentLoaded', async () => {
     const accountId = urlParams.get('account_id');
     
     if (!token || !accountId) {
-        showError('Missing authentication parameters');
+        showError('Missing authentication parameters - token and account_id are required in URL');
         return;
     }
 
     try {
-        // Initialize API
+        // Initialize API with proper configuration
         api = new DerivAPIBrowser({ 
-            endpoint: API_ENDPOINT, 
-            appId: APP_ID 
+            endpoint: API_ENDPOINT,
+            appId: APP_ID,
+            lang: 'EN',
+            brand: 'deriv'
         });
+
+        // Add connection event handlers
+        api.connection.onopen = () => {
+            console.log('Connection established');
+            document.getElementById('accountInfo').textContent = 'Connecting...';
+        };
         
-        // Authorize connection
-        await api.authorize(token);
+        api.connection.onerror = (err) => {
+            showError(`WebSocket error: ${err.message}`);
+            console.error('WebSocket error:', err);
+        };
         
-        // Get account info
-        const accountResponse = await api.account();
+        api.connection.onclose = () => {
+            showError('Connection closed - attempting to reconnect...');
+            setTimeout(initializeConnection, 5000);
+        };
+
+        // Authorize connection with proper token handling
+        const authResponse = await api.authorize(token);
+        
+        if (!authResponse.authorize) {
+            showError('Authorization failed - invalid token or session');
+            return;
+        }
+
+        // Verify the authorized account matches the URL parameter
+        if (authResponse.authorize.loginid !== accountId) {
+            showError('Account ID mismatch - please log in again');
+            return;
+        }
+
+        // Extract account info from authorization response
         currentAccount = {
-            id: accountResponse.account.account_list[0].account_id,
-            currency: accountResponse.account.account_list[0].currency,
-            balance: accountResponse.account.balance
+            id: authResponse.authorize.loginid,
+            currency: authResponse.authorize.currency,
+            balance: authResponse.authorize.balance,
+            token: token,
+            email: authResponse.authorize.email
         };
         
         updateAccountInfo();
@@ -62,13 +92,15 @@ document.addEventListener('DOMContentLoaded', async () => {
         
     } catch (error) {
         showError(`Initialization failed: ${error.message}`);
+        console.error('Initialization error:', error);
     }
 });
 
 function updateAccountInfo() {
     document.getElementById('accountInfo').innerHTML = `
         Account: ${currentAccount.id} | 
-        Balance: ${currentAccount.balance} ${currentAccount.currency}
+        Balance: ${currentAccount.balance} ${currentAccount.currency} |
+        Email: ${currentAccount.email}
     `;
 }
 
@@ -100,6 +132,8 @@ function initChart() {
 
 async function loadHistoricalData() {
     try {
+        document.getElementById('accountInfo').textContent = 'Loading historical data...';
+        
         const response = await api.getTickHistory({
             ticks_history: currentInstrument,
             count: MAX_TICKS,
@@ -107,6 +141,10 @@ async function loadHistoricalData() {
             style: 'candles',
             granularity: 60 // 1-minute candles
         });
+        
+        if (!response.candles) {
+            throw new Error('Invalid historical data response');
+        }
         
         historicalData = response.candles.map(candle => ({
             time: candle.epoch,
@@ -120,6 +158,7 @@ async function loadHistoricalData() {
         
     } catch (error) {
         showError(`Failed to load historical data: ${error.message}`);
+        console.error('Historical data error:', error);
     }
 }
 
@@ -127,12 +166,16 @@ function setupEventListeners() {
     // Instrument selection
     document.getElementById('instrumentSelect').addEventListener('change', async (e) => {
         currentInstrument = e.target.value;
-        await loadHistoricalData();
-        
-        // Resubscribe to ticks
-        if (activeSubscriptions.size > 0) {
-            unsubscribeFromTicks();
-            subscribeToTicks();
+        try {
+            await loadHistoricalData();
+            
+            // Resubscribe to ticks
+            if (activeSubscriptions.size > 0) {
+                unsubscribeFromTicks();
+                await subscribeToTicks();
+            }
+        } catch (error) {
+            showError(`Failed to change instrument: ${error.message}`);
         }
     });
     
@@ -147,139 +190,160 @@ function setupEventListeners() {
 
 async function subscribeToTicks() {
     try {
-        const subscription = await api.subscribe({ ticks: currentInstrument });
+        const subscription = await api.subscribe({ 
+            ticks: currentInstrument,
+            subscribe: 1
+        });
+        
         activeSubscriptions.add(subscription);
         
         subscription.onUpdate(data => {
             if (data.tick) {
                 processTick(data.tick);
+            } else if (data.error) {
+                showError(`Tick subscription error: ${data.error.message}`);
             }
         });
         
     } catch (error) {
         showError(`Failed to subscribe to ticks: ${error.message}`);
+        console.error('Subscription error:', error);
     }
 }
 
 function unsubscribeFromTicks() {
-    activeSubscriptions.forEach(sub => sub.unsubscribe());
+    activeSubscriptions.forEach(sub => {
+        try {
+            sub.unsubscribe();
+        } catch (error) {
+            console.error('Failed to unsubscribe:', error);
+        }
+    });
     activeSubscriptions.clear();
 }
 
 function processTick(tick) {
-    const newTick = {
-        quote: parseFloat(tick.quote),
-        epoch: tick.epoch,
-        symbol: tick.symbol
-    };
-    
-    // Add to tick data (limit size)
-    tickData.push(newTick);
-    if (tickData.length > MAX_TICKS) {
-        tickData.shift();
-    }
-    
-    // Update candle (simplified - in production you'd want proper candle formation)
-    const currentTime = Math.floor(newTick.epoch / 60) * 60; // Minute precision
-    const lastCandle = historicalData[historicalData.length - 1];
-    
-    if (lastCandle && currentTime === lastCandle.time) {
-        // Update current candle
-        lastCandle.high = Math.max(lastCandle.high, newTick.quote);
-        lastCandle.low = Math.min(lastCandle.low, newTick.quote);
-        lastCandle.close = newTick.quote;
-    } else {
-        // Create new candle
-        const newCandle = {
-            time: currentTime,
-            open: newTick.quote,
-            high: newTick.quote,
-            low: newTick.quote,
-            close: newTick.quote
+    try {
+        const newTick = {
+            quote: parseFloat(tick.quote),
+            epoch: tick.epoch,
+            symbol: tick.symbol
         };
-        historicalData.push(newCandle);
-        if (historicalData.length > MAX_TICKS) {
-            historicalData.shift();
+        
+        // Add to tick data (limit size)
+        tickData.push(newTick);
+        if (tickData.length > MAX_TICKS) {
+            tickData.shift();
         }
-    }
-    
-    // Update chart
-    candleSeries.update(historicalData[historicalData.length - 1]);
-    
-    // Generate signal (every minute for demo)
-    const now = Date.now();
-    if (now - lastSignalTime > 60000) { // 1 minute
-        generateSignal();
-        lastSignalTime = now;
+        
+        // Update candle (simplified - in production you'd want proper candle formation)
+        const currentTime = Math.floor(newTick.epoch / 60) * 60; // Minute precision
+        const lastCandle = historicalData[historicalData.length - 1];
+        
+        if (lastCandle && currentTime === lastCandle.time) {
+            // Update current candle
+            lastCandle.high = Math.max(lastCandle.high, newTick.quote);
+            lastCandle.low = Math.min(lastCandle.low, newTick.quote);
+            lastCandle.close = newTick.quote;
+        } else {
+            // Create new candle
+            const newCandle = {
+                time: currentTime,
+                open: newTick.quote,
+                high: newTick.quote,
+                low: newTick.quote,
+                close: newTick.quote
+            };
+            historicalData.push(newCandle);
+            if (historicalData.length > MAX_TICKS) {
+                historicalData.shift();
+            }
+        }
+        
+        // Update chart
+        candleSeries.update(historicalData[historicalData.length - 1]);
+        
+        // Generate signal (every minute for demo)
+        const now = Date.now();
+        if (now - lastSignalTime > 60000) { // 1 minute
+            generateSignal();
+            lastSignalTime = now;
+        }
+    } catch (error) {
+        console.error('Tick processing error:', error);
     }
 }
 
 function generateSignal() {
-    // Simplified signal generation (using 3 strategies and 3 indicators)
-    const signal = {
-        direction: '--',
-        confidence: 0,
-        strategyConfirmations: {},
-        indicatorConfirmations: {}
-    };
-    
-    // Strategy confirmations
-    const emaCross = checkEMACross();
-    if (emaCross.confidence > 0) {
-        signal.strategyConfirmations.emaCross = emaCross;
-    }
-    
-    const rsiSignal = checkRSI();
-    if (rsiSignal.confidence > 0) {
-        signal.strategyConfirmations.rsiSignal = rsiSignal;
-    }
-    
-    const priceAction = checkPriceAction();
-    if (priceAction.confidence > 0) {
-        signal.strategyConfirmations.priceAction = priceAction;
-    }
-    
-    // Indicator confirmations
-    const macdSignal = checkMACD();
-    if (macdSignal.confidence > 0) {
-        signal.indicatorConfirmations.macd = macdSignal;
-    }
-    
-    const bollingerSignal = checkBollinger();
-    if (bollingerSignal.confidence > 0) {
-        signal.indicatorConfirmations.bollinger = bollingerSignal;
-    }
-    
-    const volumeSignal = checkVolume();
-    if (volumeSignal.confidence > 0) {
-        signal.indicatorConfirmations.volume = volumeSignal;
-    }
-    
-    // Determine final signal
-    const bullishConfirmations = Object.values(signal.strategyConfirmations)
-        .concat(Object.values(signal.indicatorConfirmations))
-        .filter(c => c.direction === 'bullish').length;
-    
-    const bearishConfirmations = Object.values(signal.strategyConfirmations)
-        .concat(Object.values(signal.indicatorConfirmations))
-        .filter(c => c.direction === 'bearish').length;
-    
-    const totalConfirmations = bullishConfirmations + bearishConfirmations;
-    
-    if (totalConfirmations > 0) {
-        if (bullishConfirmations > bearishConfirmations) {
-            signal.direction = 'BUY';
-            signal.confidence = Math.min(100, (bullishConfirmations / totalConfirmations) * 100);
-        } else {
-            signal.direction = 'SELL';
-            signal.confidence = Math.min(100, (bearishConfirmations / totalConfirmations) * 100);
+    try {
+        // Simplified signal generation (using 3 strategies and 3 indicators)
+        const signal = {
+            direction: '--',
+            confidence: 0,
+            strategyConfirmations: {},
+            indicatorConfirmations: {}
+        };
+        
+        // Strategy confirmations
+        const emaCross = checkEMACross();
+        if (emaCross.confidence > 0) {
+            signal.strategyConfirmations.emaCross = emaCross;
         }
+        
+        const rsiSignal = checkRSI();
+        if (rsiSignal.confidence > 0) {
+            signal.strategyConfirmations.rsiSignal = rsiSignal;
+        }
+        
+        const priceAction = checkPriceAction();
+        if (priceAction.confidence > 0) {
+            signal.strategyConfirmations.priceAction = priceAction;
+        }
+        
+        // Indicator confirmations
+        const macdSignal = checkMACD();
+        if (macdSignal.confidence > 0) {
+            signal.indicatorConfirmations.macd = macdSignal;
+        }
+        
+        const bollingerSignal = checkBollinger();
+        if (bollingerSignal.confidence > 0) {
+            signal.indicatorConfirmations.bollinger = bollingerSignal;
+        }
+        
+        const volumeSignal = checkVolume();
+        if (volumeSignal.confidence > 0) {
+            signal.indicatorConfirmations.volume = volumeSignal;
+        }
+        
+        // Determine final signal
+        const bullishConfirmations = Object.values(signal.strategyConfirmations)
+            .concat(Object.values(signal.indicatorConfirmations))
+            .filter(c => c.direction === 'bullish').length;
+        
+        const bearishConfirmations = Object.values(signal.strategyConfirmations)
+            .concat(Object.values(signal.indicatorConfirmations))
+            .filter(c => c.direction === 'bearish').length;
+        
+        const totalConfirmations = bullishConfirmations + bearishConfirmations;
+        
+        if (totalConfirmations > 0) {
+            if (bullishConfirmations > bearishConfirmations) {
+                signal.direction = 'BUY';
+                signal.confidence = Math.min(100, (bullishConfirmations / totalConfirmations) * 100);
+            } else {
+                signal.direction = 'SELL';
+                signal.confidence = Math.min(100, (bearishConfirmations / totalConfirmations) * 100);
+            }
+        }
+        
+        displaySignal(signal);
+        
+        // Enable execute button if we have a signal
+        document.getElementById('executeBtn').disabled = signal.direction === '--';
+    } catch (error) {
+        console.error('Signal generation error:', error);
     }
-    
-    displaySignal(signal);
-    
-    // Enable execute button if we have a signal
-    document.getElementById('executeBtn').disabled = signal.direction === '--';
 }
 
 // Strategy implementations
@@ -517,6 +581,12 @@ async function executeTrade(direction) {
     }
     
     try {
+        // Ensure we're authorized
+        if (!currentAccount?.token) {
+            showError('Session expired - please reload the page');
+            return;
+        }
+
         const response = await api.buy({
             price: amount,
             amount: amount,
@@ -527,6 +597,10 @@ async function executeTrade(direction) {
             duration_unit: 'm',
             symbol: currentInstrument
         });
+        
+        if (!response.buy) {
+            throw new Error('Invalid trade response');
+        }
         
         const trade = {
             id: response.buy.contract_id,
@@ -542,6 +616,7 @@ async function executeTrade(direction) {
         
     } catch (error) {
         showError(`Trade execution failed: ${error.message}`);
+        console.error('Trade execution error:', error);
     }
 }
 
@@ -564,4 +639,15 @@ function showError(message) {
     errorDiv.textContent = message;
     document.getElementById('tradeLogs').prepend(errorDiv);
     console.error(message);
+}
+
+// Reconnection logic
+function initializeConnection() {
+    const urlParams = new URLSearchParams(window.location.search);
+    const token = urlParams.get('token');
+    const accountId = urlParams.get('account_id');
+    
+    if (token && accountId) {
+        location.reload(); // Simple reconnect by reloading
+    }
 }
