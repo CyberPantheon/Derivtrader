@@ -2,662 +2,96 @@
 <html lang="en">
 <head>
     <meta charset="UTF-8">
-    <title>AI Trading Signal Assistant - Deriv</title>
-    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/lightweight-charts/dist/lightweight-charts.css">
-    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>AI Trading Signal System</title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.1.3/dist/css/bootstrap.min.css" rel="stylesheet">
+    <!-- TradingView Charting Library -->
+    <script type="text/javascript" src="https://s3.tradingview.com/tv.js"></script>
     <style>
-        :root {
-            --primary-color: #00b4d8;
-            --primary-dark: #0093b8;
-            --secondary-color: #ff4d4d;
-            --secondary-dark: #e03c3c;
-            --background: #0a192f;
-            --background-light: #172a46;
-            --panel-bg: rgba(255, 255, 255, 0.05);
-            --panel-bg-light: rgba(255, 255, 255, 0.08);
-            --text-primary: #ffffff;
-            --text-secondary: rgba(255, 255, 255, 0.7);
-            --success-color: #00c853;
-            --warning-color: #ffab00;
-            --error-color: #ff3d00;
-            --border-radius: 12px;
-            --box-shadow: 0 8px 32px rgba(0, 0, 0, 0.2);
-            --transition: all 0.3s cubic-bezier(0.25, 0.8, 0.25, 1);
-        }
-
-        * {
-            box-sizing: border-box;
-            margin: 0;
-            padding: 0;
-        }
-
-        body {
-            background: var(--background);
-            color: var(--text-primary);
-            font-family: 'Inter', sans-serif;
-            margin: 0;
-            padding: 20px;
-            min-height: 100vh;
-            overflow-x: hidden;
-        }
-
-        .dashboard-header {
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
-            padding: 15px 25px;
-            background: var(--panel-bg);
-            backdrop-filter: blur(12px);
-            border-radius: var(--border-radius);
-            margin-bottom: 20px;
-            box-shadow: var(--box-shadow);
-            border: 1px solid rgba(255, 255, 255, 0.1);
-        }
-
-        .dashboard-header h2 {
-            font-weight: 600;
-            font-size: 1.5rem;
-            background: linear-gradient(90deg, var(--primary-color), #00e676);
-            -webkit-background-clip: text;
-            background-clip: text;
-            color: transparent;
-        }
-
-        .account-selector {
-            padding: 10px 20px;
-            background: rgba(0, 180, 216, 0.1);
-            border: 1px solid var(--primary-color);
-            border-radius: 8px;
-            color: white;
-            cursor: pointer;
-            font-family: 'Inter', sans-serif;
-            font-weight: 500;
-            transition: var(--transition);
-            margin-right: 10px;
-        }
-
-        .account-selector:hover {
-            background: rgba(0, 180, 216, 0.2);
-        }
-
-        .account-selector:focus {
-            outline: none;
-            box-shadow: 0 0 0 2px rgba(0, 180, 216, 0.3);
-        }
-
-        .account-authenticate {
-            padding: 10px 20px;
-            background: var(--primary-color);
-            border: none;
-            border-radius: 8px;
-            color: white;
-            cursor: pointer;
-            font-family: 'Inter', sans-serif;
-            font-weight: 500;
-            transition: var(--transition);
-        }
-
-        .account-authenticate:hover {
-            background: var(--primary-dark);
-        }
-
-        .instrument-selector {
-            padding: 10px 20px;
-            background: rgba(0, 180, 216, 0.1);
-            border: 1px solid var(--primary-color);
-            border-radius: 8px;
-            color: white;
-            cursor: pointer;
-            font-family: 'Inter', sans-serif;
-            font-weight: 500;
-            transition: var(--transition);
-            margin-right: 10px;
-        }
-
-        .instrument-selector:hover {
-            background: rgba(0, 180, 216, 0.2);
-        }
-
-        .instrument-analyze {
-            padding: 10px 20px;
-            background: var(--warning-color);
-            border: none;
-            border-radius: 8px;
-            color: white;
-            cursor: pointer;
-            font-family: 'Inter', sans-serif;
-            font-weight: 500;
-            transition: var(--transition);
-        }
-
-        .instrument-analyze:hover {
-            background: #e09a00;
-        }
-
-        .instrument-analyze:disabled {
-            background: rgba(255, 171, 0, 0.3);
-            cursor: not-allowed;
-        }
-
-        .account-info {
-            display: flex;
-            align-items: center;
-            gap: 15px;
-        }
-
-        .account-balance {
-            font-weight: 600;
-            font-size: 1.1rem;
-        }
-
-        .main-grid {
-            display: grid;
-            grid-template-columns: 1fr 350px;
-            gap: 20px;
-            height: calc(100vh - 120px);
-        }
-
-        .chart-container {
-            background: var(--panel-bg);
-            border-radius: var(--border-radius);
-            padding: 20px;
-            position: relative;
-            box-shadow: var(--box-shadow);
-            border: 1px solid rgba(255, 255, 255, 0.1);
-            backdrop-filter: blur(12px);
-        }
-
-        .chart-controls {
-            position: absolute;
-            top: 20px;
-            right: 20px;
-            display: flex;
-            gap: 10px;
-            z-index: 10;
-        }
-
-        .chart-button {
-            padding: 8px 15px;
-            background: rgba(0, 180, 216, 0.1);
-            border: 1px solid var(--primary-color);
-            border-radius: 6px;
-            color: white;
-            cursor: pointer;
-            transition: var(--transition);
-            font-family: 'Inter', sans-serif;
-            font-weight: 500;
-            font-size: 0.85rem;
-        }
-
-        .chart-button:hover {
-            background: rgba(0, 180, 216, 0.2);
-        }
-
-        .chart-button.active {
-            background: var(--primary-color);
-            color: white;
-        }
-
-        .analysis-panel {
-            background: var(--panel-bg);
-            border-radius: var(--border-radius);
-            padding: 20px;
-            overflow-y: auto;
-            display: flex;
-            flex-direction: column;
-            gap: 20px;
-            box-shadow: var(--box-shadow);
-            border: 1px solid rgba(255, 255, 255, 0.1);
-            backdrop-filter: blur(12px);
-        }
-
-        .analysis-panel::-webkit-scrollbar {
-            width: 6px;
-        }
-
-        .analysis-panel::-webkit-scrollbar-track {
-            background: rgba(255, 255, 255, 0.05);
-            border-radius: 3px;
-        }
-
-        .analysis-panel::-webkit-scrollbar-thumb {
-            background: var(--primary-color);
-            border-radius: 3px;
-        }
-
-        .panel-title {
-            font-size: 1.2rem;
-            font-weight: 600;
-            margin-bottom: 10px;
-            color: var(--primary-color);
-        }
-
-        .strategy-status-container {
-            display: grid;
-            grid-template-columns: repeat(2, 1fr);
-            gap: 10px;
-        }
-
-        .strategy-status {
-            padding: 15px;
-            background: var(--panel-bg-light);
-            border-radius: 8px;
-            border-left: 4px solid var(--primary-color);
-            transition: var(--transition);
-        }
-
-        .strategy-status:hover {
-            transform: translateY(-2px);
-            box-shadow: 0 4px 12px rgba(0, 0, 0, 0.1);
-        }
-
-        .strategy-status.analyzing {
-            border-left-color: var(--warning-color);
-        }
-
-        .strategy-status.completed {
-            border-left-color: var(--success-color);
-        }
-
-        .strategy-status.error {
-            border-left-color: var(--error-color);
-        }
-
-        .strategy-name {
-            font-weight: 600;
-            margin-bottom: 5px;
-            display: flex;
-            align-items: center;
-            gap: 8px;
-        }
-
-        .strategy-description {
-            font-size: 0.8rem;
-            color: var(--text-secondary);
-            margin-bottom: 10px;
-        }
-
-        .strategy-progress {
-            height: 4px;
-            background: rgba(255, 255, 255, 0.1);
-            border-radius: 2px;
-            margin-top: 10px;
-            overflow: hidden;
-        }
-        
-        .progress-bar {
-            width: 0%;
-            height: 100%;
-            background: var(--primary-color);
-            transition: width 0.3s ease;
-        }
-
-        .analysis-log {
-            flex-grow: 1;
-            overflow-y: auto;
-            display: flex;
-            flex-direction: column-reverse;
-            gap: 10px;
-            padding-right: 5px;
-        }
-
-        .log-entry {
-            padding: 12px;
-            background: var(--panel-bg-light);
-            border-radius: 8px;
-            font-size: 0.85rem;
-            line-height: 1.5;
-            transition: var(--transition);
-            border-left: 3px solid var(--panel-bg-light);
-        }
-
-        .log-entry:hover {
-            background: var(--panel-bg);
-            border-left: 3px solid var(--primary-color);
-        }
-
-        .log-time {
-            color: var(--primary-color);
-            font-size: 0.75rem;
-            margin-bottom: 3px;
-        }
-
-        .log-message {
-            word-break: break-word;
-        }
-
-        .performance-metrics {
-            display: grid;
-            grid-template-columns: repeat(2, 1fr);
-            gap: 10px;
-            margin-top: 10px;
-        }
-
-        .metric-card {
-            background: var(--panel-bg-light);
-            padding: 15px;
-            border-radius: 8px;
-            text-align: center;
-            transition: var(--transition);
-        }
-
-        .metric-card:hover {
-            transform: translateY(-2px);
-            box-shadow: 0 4px 12px rgba(0, 0, 0, 0.1);
-        }
-
-        .metric-label {
-            font-size: 0.8rem;
-            color: var(--text-secondary);
-            margin-bottom: 5px;
-        }
-
-        .metric-value {
-            font-size: 1.4rem;
-            font-weight: 600;
-            color: var(--primary-color);
-        }
-
-        .signal-panel {
-            background: var(--panel-bg-light);
-            padding: 20px;
-            border-radius: 8px;
-            margin-top: 10px;
-            transition: var(--transition);
-        }
-
-        .signal-panel:hover {
-            transform: translateY(-2px);
-            box-shadow: 0 4px 12px rgba(0, 0, 0, 0.1);
-        }
-
-        .signal-header {
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
-            margin-bottom: 10px;
-        }
-
-        .signal-title {
-            font-weight: 600;
-            color: var(--primary-color);
-        }
-
-        .confidence-meter {
-            display: flex;
-            align-items: center;
-            gap: 10px;
-            margin: 15px 0;
-        }
-
-        .confidence-label {
-            font-size: 0.85rem;
-            color: var(--text-secondary);
-        }
-
-        .confidence-fill {
-            height: 8px;
-            background: linear-gradient(90deg, var(--secondary-color), var(--primary-color));
-            border-radius: 4px;
-            flex-grow: 1;
-            overflow: hidden;
-        }
-
-        .confidence-value {
-            font-weight: 600;
-            font-size: 0.9rem;
-            min-width: 40px;
-            text-align: right;
-        }
-
-        .live-indicator {
-            width: 10px;
-            height: 10px;
-            background: var(--success-color);
-            border-radius: 50%;
-            animation: pulse 1.5s infinite;
-        }
-
-        @keyframes pulse {
-            0% { box-shadow: 0 0 0 0 rgba(0, 200, 83, 0.4); }
-            70% { box-shadow: 0 0 0 10px rgba(0, 200, 83, 0); }
-            100% { box-shadow: 0 0 0 0 rgba(0, 200, 83, 0); }
-        }
-
-        .signal-reasons {
-            background: var(--panel-bg);
-            border-radius: 6px;
-            padding: 12px;
-            margin-top: 10px;
-        }
-
-        .signal-reason {
-            display: flex;
-            align-items: flex-start;
-            gap: 8px;
-            margin-bottom: 8px;
-            font-size: 0.85rem;
-        }
-
-        .signal-reason:last-child {
-            margin-bottom: 0;
-        }
-
-        .reason-bullet {
-            color: var(--primary-color);
-            font-weight: bold;
-            flex-shrink: 0;
-            margin-top: 2px;
-        }
-
-        .signal-actions {
-            display: flex;
-            gap: 10px;
-            margin-top: 15px;
-        }
-
-        .action-button {
-            padding: 10px 20px;
-            border: none;
-            border-radius: 6px;
-            cursor: pointer;
-            transition: var(--transition);
-            font-family: 'Inter', sans-serif;
-            font-weight: 500;
-            font-size: 0.9rem;
-            flex: 1;
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            gap: 8px;
-        }
-
-        .action-button.primary {
-            background: var(--primary-color);
-            color: white;
-        }
-
-        .action-button.primary:hover {
-            background: var(--primary-dark);
-            transform: translateY(-2px);
-        }
-
-        .action-button.secondary {
-            background: var(--secondary-color);
-            color: white;
-        }
-
-        .action-button.secondary:hover {
-            background: var(--secondary-dark);
-            transform: translateY(-2px);
-        }
-
-        .session-summary {
-            background: var(--panel-bg-light);
-            border-radius: 8px;
-            padding: 20px;
-            margin-bottom: 20px;
-            border-left: 4px solid var(--primary-color);
-        }
-
-        .session-summary h3 {
-            color: var(--primary-color);
-            margin-bottom: 15px;
-            font-size: 1.1rem;
-        }
-
-        .session-summary p {
-            margin-bottom: 8px;
-            font-size: 0.9rem;
-        }
-
-        .session-summary p:last-child {
-            margin-bottom: 0;
-        }
-
-        /* Responsive adjustments */
-        @media (max-width: 1200px) {
-            .main-grid {
-                grid-template-columns: 1fr;
-                height: auto;
-            }
-            
-            .analysis-panel {
-                max-height: 500px;
-            }
-        }
-
-        @media (max-width: 768px) {
-            .dashboard-header {
-                flex-direction: column;
-                gap: 15px;
-                text-align: center;
-            }
-            
-            .account-controls, .instrument-controls {
-                flex-direction: column;
-                width: 100%;
-            }
-            
-            .account-selector, .instrument-selector,
-            .account-authenticate, .instrument-analyze {
-                width: 100%;
-                margin-right: 0;
-                margin-bottom: 10px;
-            }
-            
-            .strategy-status-container {
-                grid-template-columns: 1fr;
-            }
-            
-            .performance-metrics {
-                grid-template-columns: 1fr;
-            }
-        }
-
-        /* Account and Instrument Controls */
-        .account-controls, .instrument-controls {
-            display: flex;
-            align-items: center;
-            margin-bottom: 10px;
-        }
+        .chart-container { height: 500px; }
+        .signal-panel { background: #f8f9fa; border-radius: 8px; padding: 20px; }
+        .real-time-data { font-size: 0.9rem; }
     </style>
 </head>
 <body>
-    <div class="dashboard-header">
-        <h2>AI Trading Signal Assistant</h2>
-        <div class="account-controls">
-            <select class="account-selector" id="accountList" disabled>
-                <option>Select account...</option>
-            </select>
-            <button class="account-authenticate" id="authenticateBtn">Authenticate</button>
+    <div class="container-fluid py-4">
+        <!-- Header Section -->
+        <div class="row mb-4">
+            <div class="col-md-6">
+                <h2>AI Trading Signal System</h2>
+                <div id="accountInfo" class="real-time-data"></div>
+            </div>
+            <div class="col-md-6 text-end">
+                <div class="form-check form-switch">
+                    <input class="form-check-input" type="checkbox" id="autoTradeSwitch">
+                    <label class="form-check-label" for="autoTradeSwitch">Auto-Trade Mode</label>
+                </div>
+                <button id="executeTrade" class="btn btn-primary mt-2">Execute Trade Manually</button>
+            </div>
         </div>
-        <div class="instrument-controls">
-            <select class="instrument-selector" id="instrumentList" disabled>
-                <option>Select instrument...</option>
-            </select>
-            <button class="instrument-analyze" id="analyzeBtn" disabled>Analyze</button>
-        </div>
-        <div class="account-info">
-            <div class="account-balance">Balance: <span id="accountBalance">--</span></div>
-        </div>
-    </div>
 
-    <div class="main-grid">
-        <div class="chart-container" id="mainChart">
-            <div class="chart-controls">
-                <button class="chart-button" id="timeframe1m">1m</button>
-                <button class="chart-button" id="timeframe5m">5m</button>
-                <button class="chart-button" id="timeframe15m">15m</button>
-                <button class="chart-button" id="timeframe1h">1h</button>
-            </div>
-        </div>
-        
-        <div class="analysis-panel">
-            <h3 class="panel-title">Strategy Analysis</h3>
-            <div class="strategy-status-container" id="strategyStatus">
-                <!-- Strategies will be populated by JavaScript -->
-            </div>
-            
-            <div class="panel-title">Analysis Log</div>
-            <div class="analysis-log" id="analysisLog">
-                <!-- Log entries will be added here -->
-            </div>
-            
-            <div class="performance-metrics">
-                <div class="metric-card">
-                    <div class="metric-label">Win Rate</div>
-                    <div class="metric-value" id="winRate">0%</div>
-                </div>
-                <div class="metric-card">
-                    <div class="metric-label">PNL</div>
-                    <div class="metric-value" id="pnl">$0.00</div>
-                </div>
-                <div class="metric-card">
-                    <div class="metric-label">Trades</div>
-                    <div class="metric-value" id="totalTrades">0</div>
-                </div>
-                <div class="metric-card">
-                    <div class="metric-label">Profit Factor</div>
-                    <div class="metric-value" id="profitFactor">0.00</div>
-                </div>
-            </div>
-
-            <div class="signal-panel">
-                <div class="signal-header">
-                    <h3 class="signal-title">Current Signal</h3>
-                    <div class="live-indicator"></div>
-                </div>
-                <div id="currentSignal">
-                    <p style="color: var(--text-secondary); font-size: 0.9rem;">Waiting for analysis...</p>
-                </div>
-                
-                <div class="confidence-meter">
-                    <span class="confidence-label">Confidence:</span>
-                    <div class="confidence-fill">
-                        <div id="confidenceFill" style="width: 0%; height: 100%; background: linear-gradient(90deg, var(--secondary-color), var(--primary-color);"></div>
+        <!-- Main Content -->
+        <div class="row g-4">
+            <!-- Chart Section -->
+            <div class="col-lg-8">
+                <div class="card">
+                    <div class="card-body">
+                        <div id="tradingview_chart" class="chart-container"></div>
                     </div>
-                    <span class="confidence-value" id="confidenceValue">0%</span>
                 </div>
-                
-                <div class="signal-actions">
-                    <button class="action-button primary" id="executeSignal">
-                        Execute Signal
-                    </button>
-                    <button class="action-button secondary" id="ignoreSignal">
-                        Ignore
-                    </button>
+            </div>
+
+            <!-- Control Panel -->
+            <div class="col-lg-4">
+                <div class="card">
+                    <div class="card-body">
+                        <div class="mb-3">
+                            <label class="form-label">Select Instrument</label>
+                            <select id="instrumentSelect" class="form-select">
+                                <option value="R_100">Volatility 100 Index</option>
+                                <option value="R_50">Volatility 50 Index</option>
+                                <option value="1HZ100V">1HZ100V</option>
+                            </select>
+                        </div>
+                        
+                        <!-- Signal Display -->
+                        <div class="signal-panel mb-3">
+                            <h5>Current Signal</h5>
+                            <div id="signalStrength" class="fs-4 mb-2">-</div>
+                            <div id="signalDetails" class="real-time-data"></div>
+                        </div>
+
+                        <!-- Risk Management -->
+                        <div class="mb-3">
+                            <h5>Risk Parameters</h5>
+                            <div class="input-group mb-2">
+                                <span class="input-group-text">$</span>
+                                <input type="number" id="tradeAmount" class="form-control" value="10" min="1">
+                            </div>
+                            <div class="input-group mb-2">
+                                <input type="number" id="stopLoss" class="form-control" value="5" min="1" step="0.5">
+                                <span class="input-group-text">% SL</span>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Log Section -->
+        <div class="row mt-4">
+            <div class="col-12">
+                <div class="card">
+                    <div class="card-body">
+                        <h5>Trade Log</h5>
+                        <div id="tradeLog" class="real-time-data" style="height: 200px; overflow-y: auto;"></div>
+                    </div>
                 </div>
             </div>
         </div>
     </div>
 
-    <!-- Load required libraries first -->
-    <script src="https://cdn.jsdelivr.net/npm/lightweight-charts/dist/lightweight-charts.standalone.production.js"></script>
-    <script src="https://cdn.jsdelivr.net/npm/@deriv/deriv-api/dist/DerivAPIBrowser.min.js"></script>
-    <script src="https://cdn.jsdelivr.net/npm/technicalindicators/dist/technicalindicators.min.js"></script>
-    
-    <!-- Then load your script -->
+    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.1.3/dist/js/bootstrap.bundle.min.js"></script>
     <script src="options_script.js"></script>
 </body>
 </html>
