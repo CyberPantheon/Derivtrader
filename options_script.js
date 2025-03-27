@@ -1,327 +1,251 @@
-// options_script.js - Fixed Implementation
-const APP_ID = 69958;
-const API_ENDPOINT = 'wss://ws.binaryws.com/websockets/v3';
-const MAX_TICKS = 10000;
-const PREDICTION_WINDOW = 5; // minutes
-
-// Global variables
-let api;
-let currentAccount = null;
-let currentInstrument = null;
-let currentChart = null;
-let currentSeries = null;
-let tickData = [];
-let historicalData = [];
-let activeSubscriptions = new Set();
-let tradeHistory = [];
-let strategyPerformance = {};
-let lastSignalTime = 0;
-let accounts = [];
-let instruments = [];
-
-// DOM Elements
-const elements = {
-    accountList: document.getElementById('accountList'),
-    authenticateBtn: document.getElementById('authenticateBtn'),
-    instrumentList: document.getElementById('instrumentList'),
-    analyzeBtn: document.getElementById('analyzeBtn'),
-    accountBalance: document.getElementById('accountBalance'),
-    strategyStatus: document.getElementById('strategyStatus'),
-    analysisLog: document.getElementById('analysisLog'),
-    winRate: document.getElementById('winRate'),
-    pnl: document.getElementById('pnl'),
-    totalTrades: document.getElementById('totalTrades'),
-    profitFactor: document.getElementById('profitFactor'),
-    currentSignal: document.getElementById('currentSignal'),
-    confidenceFill: document.getElementById('confidenceFill'),
-    confidenceValue: document.getElementById('confidenceValue'),
-    executeSignal: document.getElementById('executeSignal'),
-    ignoreSignal: document.getElementById('ignoreSignal'),
-    timeframe1m: document.getElementById('timeframe1m'),
-    timeframe5m: document.getElementById('timeframe5m'),
-    timeframe15m: document.getElementById('timeframe15m'),
-    timeframe1h: document.getElementById('timeframe1h')
-};
-
-// Initialize API Connection
-function initializeAPI() {
-    try {
-        api = new WebSocket(API_ENDPOINT);
-        
-        api.onopen = function() {
-            addToLog('Connected to Deriv API', 'success');
-            checkForOAuthToken();
+class TradingSystem {
+    constructor(apiToken, accountId) {
+        this.deriv = new Deriv({
+            app_id: 1089,
+            endpoint: 'frontend.binaryws.com'
+        });
+        this.apiToken = apiToken;
+        this.accountId = accountId;
+        this.currentSubscription = null;
+        this.historicalData = [];
+        this.indicators = {
+            ema20: [],
+            ema50: [],
+            rsi: [],
+            macd: { macd: [], signal: [] }
         };
-        
-        api.onerror = function(error) {
-            console.error('WebSocket error:', error);
-            addToLog('Connection error. Please refresh the page.', 'error');
-        };
-        
-        api.onclose = function() {
-            addToLog('Disconnected from Deriv API', 'warning');
-        };
-        
-        api.onmessage = function(msg) {
-            const response = JSON.parse(msg.data);
-            handleAPIResponse(response);
-        };
-        
-        setupEventListeners();
-    } catch (error) {
-        console.error('API initialization failed:', error);
-        addToLog('Failed to initialize API connection', 'error');
     }
-}
 
-// Handle API responses
-function handleAPIResponse(response) {
-    if (response.error) {
-        console.error('API error:', response.error);
-        addToLog(response.error.message, 'error');
-        return;
-    }
-    
-    if (response.msg_type === 'authorize') {
-        handleAuthorizationResponse(response);
-    } else if (response.msg_type === 'account_list') {
-        handleAccountListResponse(response);
-    } else if (response.msg_type === 'active_symbols') {
-        handleActiveSymbolsResponse(response);
-    }
-}
-
-// Check for OAuth token in URL
-function checkForOAuthToken() {
-    const urlParams = new URLSearchParams(window.location.search);
-    const token = urlParams.get('token');
-    
-    if (token) {
-        localStorage.setItem('deriv_token', token);
-        window.history.replaceState({}, document.title, window.location.pathname);
-        handleAuthentication();
-    }
-}
-
-// Setup event listeners
-function setupEventListeners() {
-    elements.authenticateBtn.addEventListener('click', handleAuthentication);
-    elements.accountList.addEventListener('change', handleAccountSelection);
-    elements.instrumentList.addEventListener('change', handleInstrumentSelection);
-    elements.analyzeBtn.addEventListener('click', startAnalysis);
-    elements.executeSignal.addEventListener('click', executeCurrentSignal);
-    elements.ignoreSignal.addEventListener('click', ignoreCurrentSignal);
-    
-    // Timeframe buttons
-    elements.timeframe1m.addEventListener('click', () => changeTimeframe('1m'));
-    elements.timeframe5m.addEventListener('click', () => changeTimeframe('5m'));
-    elements.timeframe15m.addEventListener('click', () => changeTimeframe('15m'));
-    elements.timeframe1h.addEventListener('click', () => changeTimeframe('1h'));
-}
-
-// Handle authentication
-async function handleAuthentication() {
-    try {
-        const token = localStorage.getItem('deriv_token');
-        
-        if (!token) {
-            // Redirect to OAuth if no token
-            window.location.href = `https://oauth.deriv.com/oauth2/authorize?app_id=${APP_ID}&l=en`;
-            return;
+    async initialize() {
+        try {
+            await this.deriv.authorize(this.apiToken);
+            await this.loadHistoricalData();
+            this.initializeTradingView();
+            this.setupEventListeners();
+        } catch (error) {
+            this.logError(`Initialization failed: ${error.message}`);
         }
+    }
+
+    async loadHistoricalData() {
+        const response = await this.deriv.getTickHistory({
+            ticks_history: document.getElementById('instrumentSelect').value,
+            count: 1000,
+            end: 'latest'
+        });
+        this.historicalData = response.history;
+        this.calculateIndicators();
+    }
+
+    calculateIndicators() {
+        // EMA Calculation
+        this.indicators.ema20 = this.calculateEMA(20);
+        this.indicators.ema50 = this.calculateEMA(50);
         
-        // Send authorization request
-        api.send(JSON.stringify({
-            authorize: token
-        }));
+        // RSI Calculation
+        this.indicators.rsi = this.calculateRSI(14);
         
-        addToLog('Authenticating...', 'info');
+        // MACD Calculation
+        const macdResults = this.calculateMACD(12, 26, 9);
+        this.indicators.macd.macd = macdResults.macd;
+        this.indicators.macd.signal = macdResults.signal;
+    }
+
+    calculateEMA(period) {
+        const ema = [];
+        const multiplier = 2 / (period + 1);
+        let sum = 0;
         
-    } catch (error) {
-        console.error('Authentication failed:', error);
-        addToLog('Authentication failed. Please try again.', 'error');
+        for (let i = 0; i < this.historicalData.length; i++) {
+            const price = parseFloat(this.historicalData[i].quote);
+            if (i < period) {
+                sum += price;
+                ema.push(i === period - 1 ? sum / period : null);
+            } else {
+                ema.push((price - ema[i-1]) * multiplier + ema[i-1]);
+            }
+        }
+        return ema;
+    }
+
+    calculateRSI(period) {
+        const gains = [];
+        const losses = [];
+        const rsi = [];
+        
+        for (let i = 1; i < this.historicalData.length; i++) {
+            const change = parseFloat(this.historicalData[i].quote) - 
+                         parseFloat(this.historicalData[i-1].quote);
+            gains.push(change > 0 ? change : 0);
+            losses.push(change < 0 ? Math.abs(change) : 0);
+        }
+
+        let avgGain = gains.slice(0, period).reduce((a,b) => a + b, 0) / period;
+        let avgLoss = losses.slice(0, period).reduce((a,b) => a + b, 0) / period;
+
+        for (let i = period; i < gains.length; i++) {
+            avgGain = (avgGain * (period - 1) + gains[i]) / period;
+            avgLoss = (avgLoss * (period - 1) + losses[i]) / period;
+            
+            const rs = avgGain / avgLoss;
+            rsi.push(100 - (100 / (1 + rs)));
+        }
+        return rsi;
+    }
+
+    calculateMACD(shortPeriod, longPeriod, signalPeriod) {
+        const shortEMA = this.calculateEMA(shortPeriod);
+        const longEMA = this.calculateEMA(longPeriod);
+        const macdLine = shortEMA.map((val, idx) => val - longEMA[idx]);
+        const signalLine = this.calculateSignalLine(macdLine, signalPeriod);
+        return { macd: macdLine, signal: signalLine };
+    }
+
+    calculateSignalLine(values, period) {
+        return this.calculateEMA(period, values);
+    }
+
+    initializeTradingView() {
+        new TradingView.widget({
+            container_id: 'tradingview_chart',
+            symbol: 'R_100',
+            interval: '1',
+            timezone: 'Etc/UTC',
+            theme: 'light',
+            style: '1',
+            toolbar_bg: '#f1f3f6',
+            enable_publishing: false,
+            hide_side_toolbar: true,
+            studies: [
+                'MASimple@tv-basicstudies',
+                'RSI@tv-basicstudies',
+                'MACD@tv-basicstudies'
+            ]
+        });
+    }
+
+    setupEventListeners() {
+        document.getElementById('instrumentSelect').addEventListener('change', async (e) => {
+            await this.loadHistoricalData();
+            this.initializeTradingView();
+        });
+
+        document.getElementById('executeTrade').addEventListener('click', () => {
+            this.executeTrade();
+        });
+
+        // Initialize real-time subscription
+        this.subscribeToRealTime();
+    }
+
+    async subscribeToRealTime() {
+        const symbol = document.getElementById('instrumentSelect').value;
+        this.currentSubscription = await this.deriv.subscribe({ ticks: symbol });
+        
+        this.currentSubscription.onUpdate((data) => {
+            this.processTick(data.tick);
+        });
+    }
+
+    processTick(tick) {
+        this.historicalData.push(tick);
+        if (this.historicalData.length > 1000) this.historicalData.shift();
+        
+        this.calculateIndicators();
+        this.generateSignal();
+        this.updateUI(tick);
+    }
+
+    generateSignal() {
+        const currentPrice = parseFloat(this.historicalData.slice(-1)[0].quote);
+        const signals = [];
+        
+        // EMA Cross Strategy
+        if (this.indicators.ema20.slice(-1)[0] > this.indicators.ema50.slice(-1)[0]) {
+            signals.push('EMA20 Cross Above EMA50');
+        }
+
+        // RSI Strategy
+        const currentRSI = this.indicators.rsi.slice(-1)[0];
+        if (currentRSI < 30) signals.push('RSI Oversold');
+        if (currentRSI > 70) signals.push('RSI Overbought');
+
+        // MACD Strategy
+        const macd = this.indicators.macd.macd.slice(-1)[0];
+        const signal = this.indicators.macd.signal.slice(-1)[0];
+        if (macd > signal) signals.push('MACD Bullish Cross');
+
+        // Generate final signal
+        const signalStrength = (signals.length / 3) * 100;
+        this.displaySignal(signals, signalStrength);
+    }
+
+    displaySignal(signals, strength) {
+        const signalElement = document.getElementById('signalDetails');
+        const strengthElement = document.getElementById('signalStrength');
+        
+        strengthElement.textContent = `${Math.round(strength)}% Confidence`;
+        strengthElement.style.color = strength > 60 ? 'green' : strength > 40 ? 'orange' : 'red';
+        
+        signalElement.innerHTML = signals.map(s => 
+            `<div class="alert alert-sm py-1 mb-1">✅ ${s}</div>`
+        ).join('');
+    }
+
+    async executeTrade() {
+        const tradeAmount = document.getElementById('tradeAmount').value;
+        const stopLoss = document.getElementById('stopLoss').value;
+        
+        try {
+            const response = await this.deriv.buy({
+                amount: tradeAmount,
+                basis: 'stake',
+                contract_type: 'CALL',
+                currency: 'USD',
+                duration: 5,
+                duration_unit: 'm',
+                symbol: document.getElementById('instrumentSelect').value
+            });
+            
+            this.logTrade(response);
+        } catch (error) {
+            this.logError(`Trade failed: ${error.message}`);
+        }
+    }
+
+    logTrade(tradeData) {
+        const logElement = document.getElementById('tradeLog');
+        logElement.innerHTML += `
+            <div class="alert alert-sm alert-success">
+                Trade executed: ${tradeData.contract_id}<br>
+                Amount: $${tradeData.amount} | Payout: $${tradeData.payout}
+            </div>
+        `;
+    }
+
+    logError(message) {
+        const logElement = document.getElementById('tradeLog');
+        logElement.innerHTML += `
+            <div class="alert alert-sm alert-danger">
+                ${new Date().toLocaleTimeString()}: ${message}
+            </div>
+        `;
+    }
+
+    updateUI(tick) {
+        document.getElementById('accountInfo').innerHTML = `
+            Account: ${this.accountId} | Balance: $${tick.balance} 
+            | Last Tick: ${parseFloat(tick.quote).toFixed(2)}
+        `;
     }
 }
 
-// Handle authorization response
-function handleAuthorizationResponse(response) {
-    if (response.error) {
-        addToLog('Authorization failed: ' + response.error.message, 'error');
-        return;
-    }
+// Initialize system when page loads
+document.addEventListener('DOMContentLoaded', () => {
+    const urlParams = new URLSearchParams(window.location.search);
+    const apiToken = urlParams.get('token');
+    const accountId = urlParams.get('account_id');
     
-    addToLog('Successfully authenticated', 'success');
-    elements.authenticateBtn.textContent = 'Authenticated';
-    elements.authenticateBtn.style.backgroundColor = 'var(--success-color)';
-    
-    // Request account list
-    api.send(JSON.stringify({
-        account_list: 1
-    }));
-}
-
-// Handle account list response
-function handleAccountListResponse(response) {
-    accounts = response.account_list;
-    
-    if (accounts.length > 0) {
-        populateAccountDropdown();
-        addToLog(`${accounts.length} accounts loaded`, 'success');
-    } else {
-        addToLog('No trading accounts found.', 'warning');
-    }
-}
-
-// Populate account dropdown
-function populateAccountDropdown() {
-    elements.accountList.innerHTML = '';
-    
-    const defaultOption = document.createElement('option');
-    defaultOption.value = '';
-    defaultOption.textContent = 'Select account...';
-    elements.accountList.appendChild(defaultOption);
-    
-    accounts.forEach(account => {
-        const option = document.createElement('option');
-        option.value = account.loginid;
-        option.textContent = `${account.account_type} (${account.currency})`;
-        elements.accountList.appendChild(option);
-    });
-    
-    elements.accountList.disabled = false;
-}
-
-// Handle account selection
-function handleAccountSelection(event) {
-    const accountId = event.target.value;
-    currentAccount = accounts.find(acc => acc.loginid === accountId);
-    
-    if (currentAccount) {
-        elements.accountBalance.textContent = `${currentAccount.balance} ${currentAccount.currency}`;
-        fetchInstruments();
-    } else {
-        elements.instrumentList.disabled = true;
-        elements.analyzeBtn.disabled = true;
-    }
-}
-
-// Fetch available instruments
-function fetchInstruments() {
-    api.send(JSON.stringify({
-        active_symbols: 'brief',
-        product_type: 'basic'
-    }));
-    addToLog('Loading instruments...', 'info');
-}
-
-// Handle active symbols response
-function handleActiveSymbolsResponse(response) {
-    instruments = response.active_symbols.filter(sym => 
-        sym.market === 'forex' || sym.market === 'synthetic'
-    );
-    
-    populateInstrumentDropdown();
-    addToLog(`${instruments.length} instruments loaded`, 'success');
-}
-
-// Populate instrument dropdown
-function populateInstrumentDropdown() {
-    elements.instrumentList.innerHTML = '';
-    
-    const defaultOption = document.createElement('option');
-    defaultOption.value = '';
-    defaultOption.textContent = 'Select instrument...';
-    elements.instrumentList.appendChild(defaultOption);
-    
-    instruments.forEach(instrument => {
-        const option = document.createElement('option');
-        option.value = instrument.symbol;
-        option.textContent = instrument.display_name;
-        elements.instrumentList.appendChild(option);
-    });
-    
-    elements.instrumentList.disabled = false;
-}
-
-// Handle instrument selection
-function handleInstrumentSelection(event) {
-    currentInstrument = event.target.value;
-    elements.analyzeBtn.disabled = !currentInstrument;
-    
-    if (currentInstrument) {
-        initializeChart();
-    }
-}
-
-// Initialize the chart
-function initializeChart() {
-    if (currentChart) {
-        currentChart.remove();
-    }
-    
-    const chartContainer = document.getElementById('mainChart');
-    currentChart = LightweightCharts.createChart(chartContainer, {
-        width: chartContainer.clientWidth,
-        height: chartContainer.clientHeight - 40,
-        layout: {
-            backgroundColor: 'transparent',
-            textColor: 'rgba(255, 255, 255, 0.7)',
-        },
-        grid: {
-            vertLines: { color: 'rgba(255, 255, 255, 0.1)' },
-            horzLines: { color: 'rgba(255, 255, 255, 0.1)' },
-        },
-        crosshair: {
-            mode: LightweightCharts.CrosshairMode.Normal,
-        },
-        rightPriceScale: {
-            borderColor: 'rgba(255, 255, 255, 0.1)',
-        },
-        timeScale: {
-            borderColor: 'rgba(255, 255, 255, 0.1)',
-        },
-    });
-    
-    currentSeries = currentChart.addCandlestickSeries({
-        upColor: 'rgba(0, 200, 83, 0.7)',
-        downColor: 'rgba(255, 61, 0, 0.7)',
-        borderDownColor: 'rgba(255, 61, 0, 1)',
-        borderUpColor: 'rgba(0, 200, 83, 1)',
-        wickDownColor: 'rgba(255, 61, 0, 1)',
-        wickUpColor: 'rgba(0, 200, 83, 1)',
-    });
-    
-    fetchHistoricalData('1m');
-}
-
-// Fetch historical data
-function fetchHistoricalData(timeframe) {
-    if (!currentInstrument) return;
-    
-    api.send(JSON.stringify({
-        ticks_history: currentInstrument,
-        style: 'candles',
-        granularity: timeframe === '1m' ? 60 : timeframe === '5m' ? 300 : timeframe === '15m' ? 900 : 3600,
-        count: 1000,
-        end: 'latest'
-    }));
-    
-    addToLog(`Loading ${timeframe} data for ${currentInstrument}...`, 'info');
-}
-
-// Add message to log
-function addToLog(message, type = 'info') {
-    const now = new Date();
-    const logEntry = document.createElement('div');
-    logEntry.className = `log-entry ${type}`;
-    
-    logEntry.innerHTML = `
-        <div class="log-time">${now.toLocaleTimeString()}</div>
-        <div class="log-message">${message}</div>
-    `;
-    
-    elements.analysisLog.prepend(logEntry);
-}
-
-// Initialize the application
-window.addEventListener('DOMContentLoaded', initializeAPI);
+    const tradingSystem = new TradingSystem(apiToken, accountId);
+    tradingSystem.initialize();
+});
