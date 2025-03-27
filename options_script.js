@@ -1,6 +1,6 @@
 // Configuration
-const APP_ID = 69958; // Test application ID
-const API_ENDPOINT = 'frontend.binaryws.com';
+const APP_ID = 1089; // Test application ID
+const API_ENDPOINT = 'wss://ws.binaryws.com/websockets/v3'; // Fixed endpoint
 const MAX_TICKS = 1000;
 const PREDICTION_WINDOW = 5; // minutes
 
@@ -15,6 +15,9 @@ let historicalData = [];
 let activeSubscriptions = new Set();
 let tradeHistory = [];
 let lastSignalTime = 0;
+let isConnected = false;
+let reconnectAttempts = 0;
+const maxReconnectAttempts = 5;
 
 // Initialize when DOM is loaded
 document.addEventListener('DOMContentLoaded', async () => {
@@ -28,54 +31,92 @@ document.addEventListener('DOMContentLoaded', async () => {
         return;
     }
 
-    try {
-        // Initialize API with proper configuration
-        api = new DerivAPIBrowser({ 
-            endpoint: API_ENDPOINT,
-            appId: APP_ID,
-            lang: 'EN',
-            brand: 'deriv'
+    initializeConnection(token, accountId);
+});
+
+function initializeConnection(token, accountId) {
+    // Initialize API with proper configuration
+    api = new DerivAPIBrowser({ 
+        endpoint: API_ENDPOINT,
+        appId: APP_ID,
+        lang: 'EN',
+        brand: 'deriv'
+    });
+
+    // Connection event handlers
+    api.connection.onopen = () => {
+        console.log('Connection established');
+        isConnected = true;
+        reconnectAttempts = 0;
+        document.getElementById('accountInfo').textContent = 'Authenticating...';
+        
+        // Authorize immediately after connection
+        api.authorize(token).then(authResponse => {
+            if (!authResponse.authorize) {
+                throw new Error('Authorization failed - invalid token or session');
+            }
+
+            // Verify account matches
+            if (authResponse.authorize.loginid !== accountId) {
+                throw new Error('Account ID mismatch');
+            }
+
+            // Store account info
+            currentAccount = {
+                id: authResponse.authorize.loginid,
+                currency: authResponse.authorize.currency,
+                balance: authResponse.authorize.balance,
+                token: token,
+                email: authResponse.authorize.email
+            };
+            
+            updateAccountInfo();
+            initChart();
+            loadHistoricalData();
+            setupEventListeners();
+            subscribeToTicks();
+            
+        }).catch(error => {
+            showError(`Authorization failed: ${error.message}`);
+            console.error('Auth error:', error);
         });
-
-        // Add connection event handlers
-        api.connection.onopen = () => {
-            console.log('Connection established');
-            document.getElementById('accountInfo').textContent = 'Connecting...';
-        };
-        
-        api.connection.onerror = (err) => {
-            showError(`WebSocket error: ${err.message}`);
-            console.error('WebSocket error:', err);
-        };
-        
-        api.connection.onclose = () => {
-            showError('Connection closed - attempting to reconnect...');
-            setTimeout(initializeConnection, 5000);
-        };
-
-        // Authorize connection with proper token handling
-        const authResponse = await api.authorize(token);
-        
-        if (!authResponse.authorize) {
-            showError('Authorization failed - invalid token or session');
-            return;
+    };
+    
+    api.connection.onerror = (err) => {
+        showError(`WebSocket error: ${err.message}`);
+        console.error('WebSocket error:', err);
+    };
+    
+    api.connection.onclose = () => {
+        isConnected = false;
+        showError('Connection closed - attempting to reconnect...');
+        if (reconnectAttempts < maxReconnectAttempts) {
+            reconnectAttempts++;
+            setTimeout(() => initializeConnection(token, accountId), Math.min(10000, reconnectAttempts * 2000));
+        } else {
+            showError('Max reconnection attempts reached. Please refresh the page.');
         }
+    };
+}
 
-        // Verify the authorized account matches the URL parameter
-        if (authResponse.authorize.loginid !== accountId) {
-            showError('Account ID mismatch - please log in again');
-            return;
-        }
+// [Rest of your existing functions remain exactly the same...]
+// Keep all your existing functions like:
+// - updateAccountInfo()
+// - initChart()
+// - loadHistoricalData()
+// - setupEventListeners()
+// - subscribeToTicks()
+// - unsubscribeFromTicks()
+// - processTick()
+// - generateSignal()
+// - All strategy implementations (checkEMACross, checkRSI, etc.)
+// - All indicator implementations (checkMACD, checkBollinger, etc.)
+// - Helper calculations (calculateEMA, calculateRSI)
+// - UI functions (displaySignal, updateConfirmationDisplay)
+// - Trade execution (executeTrade, logTrade)
+// - Error handling (showError)
 
-        // Extract account info from authorization response
-        currentAccount = {
-            id: authResponse.authorize.loginid,
-            currency: authResponse.authorize.currency,
-            balance: authResponse.authorize.balance,
-            token: token,
-            email: authResponse.authorize.email
-        };
-        
+// Only the initialization flow has been modified to fix authentication issues
         updateAccountInfo();
         
         // Initialize chart
