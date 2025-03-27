@@ -1,5 +1,5 @@
 // Configuration
-const APP_ID = 1089; // Test application ID
+const APP_ID = 69958; // Test application ID
 const API_ENDPOINT = 'wss://ws.binaryws.com/websockets/v3'; // Fixed endpoint
 const MAX_TICKS = 1000;
 const PREDICTION_WINDOW = 5; // minutes
