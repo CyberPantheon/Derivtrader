@@ -99,44 +99,6 @@ function initializeConnection(token, accountId) {
     };
 }
 
-// [Rest of your existing functions remain exactly the same...]
-// Keep all your existing functions like:
-// - updateAccountInfo()
-// - initChart()
-// - loadHistoricalData()
-// - setupEventListeners()
-// - subscribeToTicks()
-// - unsubscribeFromTicks()
-// - processTick()
-// - generateSignal()
-// - All strategy implementations (checkEMACross, checkRSI, etc.)
-// - All indicator implementations (checkMACD, checkBollinger, etc.)
-// - Helper calculations (calculateEMA, calculateRSI)
-// - UI functions (displaySignal, updateConfirmationDisplay)
-// - Trade execution (executeTrade, logTrade)
-// - Error handling (showError)
-
-// Only the initialization flow has been modified to fix authentication issues
-        updateAccountInfo();
-        
-        // Initialize chart
-        initChart();
-        
-        // Load initial data
-        await loadHistoricalData();
-        
-        // Set up event listeners
-        setupEventListeners();
-        
-        // Start real-time subscription
-        subscribeToTicks();
-        
-    } catch (error) {
-        showError(`Initialization failed: ${error.message}`);
-        console.error('Initialization error:', error);
-    }
-});
-
 function updateAccountInfo() {
     document.getElementById('accountInfo').innerHTML = `
         Account: ${currentAccount.id} | 
