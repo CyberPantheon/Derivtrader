@@ -21,20 +21,29 @@ const maxReconnectAttempts = 5;
 
 // Initialize when DOM is loaded
 document.addEventListener('DOMContentLoaded', async () => {
-    // Extract token and account from URL
+    // Parse Deriv OAuth accounts from URL
     const urlParams = new URLSearchParams(window.location.search);
-    const token = urlParams.get('token');
-    const accountId = urlParams.get('account_id');
-    
-    if (!token || !accountId) {
-        showError('Missing authentication parameters - token and account_id are required in URL');
+    const accounts = [];
+    // Collect all acctN/tokenN/curN triplets
+    for (let i = 1; ; i++) {
+        const account = urlParams.get(`acct${i}`);
+        const token = urlParams.get(`token${i}`);
+        const currency = urlParams.get(`cur${i}`);
+        if (!account || !token) break;
+        accounts.push({ account, token, currency });
+    }
+
+    if (accounts.length === 0) {
+        showError('Missing authentication parameters - Deriv OAuth tokens not found in URL');
         return;
     }
 
-    initializeConnection(token, accountId);
+    // For simplicity, use the first account (or let user select if you want)
+    const selected = accounts[0];
+    initializeConnection(selected.token, selected.account, selected.currency);
 });
 
-function initializeConnection(token, accountId) {
+function initializeConnection(token, accountId, currency = null) {
     // Initialize API with proper configuration
     api = new DerivAPIBrowser({ 
         endpoint: API_ENDPOINT,
@@ -64,7 +73,7 @@ function initializeConnection(token, accountId) {
             // Store account info
             currentAccount = {
                 id: authResponse.authorize.loginid,
-                currency: authResponse.authorize.currency,
+                currency: authResponse.authorize.currency || currency,
                 balance: authResponse.authorize.balance,
                 token: token,
                 email: authResponse.authorize.email
