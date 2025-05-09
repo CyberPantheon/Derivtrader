@@ -19,6 +19,9 @@ let isConnected = false;
 let reconnectAttempts = 0;
 const maxReconnectAttempts = 5;
 
+// Add a log to confirm script is loaded
+console.log('options_script.js loaded');
+
 // Initialize when DOM is loaded
 document.addEventListener('DOMContentLoaded', async () => {
     // Parse Deriv OAuth accounts from URL
@@ -34,13 +37,23 @@ document.addEventListener('DOMContentLoaded', async () => {
     }
 
     if (accounts.length === 0) {
+        // Show error in UI as well as logs
+        const infoDiv = document.getElementById('accountInfo');
+        if (infoDiv) infoDiv.textContent = 'Missing authentication parameters - Deriv OAuth tokens not found in URL';
         showError('Missing authentication parameters - Deriv OAuth tokens not found in URL');
         return;
     }
 
     // For simplicity, use the first account (or let user select if you want)
     const selected = accounts[0];
-    initializeConnection(selected.token, selected.account, selected.currency);
+    try {
+        initializeConnection(selected.token, selected.account, selected.currency);
+    } catch (err) {
+        const infoDiv = document.getElementById('accountInfo');
+        if (infoDiv) infoDiv.textContent = 'Initialization failed: ' + err.message;
+        showError('Initialization failed: ' + err.message);
+        console.error('Initialization failed:', err);
+    }
 });
 
 function initializeConnection(token, accountId, currency = null) {
